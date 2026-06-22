@@ -1,9 +1,10 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-from working import stationary_distribution, kemeny, lifted_kemeny
+from working import stationary_distribution, kemeny, lifted_kemeny, collapsing
 
 def fig2() -> None:
+    """Reproduce Fig. 2: Kemeny constant of the lifted MC vs. transition probability p."""
     pvec = np.linspace(0.5, 1, 100)
     kvec = []
     # compute Kemeny's constant for each value of p
@@ -28,6 +29,11 @@ def fig2() -> None:
     plt.savefig('kemeny_vs_p.pdf')
 
 def fig3() -> None:
+    """Reproduce Fig. 3: MLE estimation error vs. trajectory length.
+
+    Proposition 4 guarantees the plug-in estimate of the physical-space MC converges to P_bar,
+    so the error should decay to zero as the trajectory length grows.
+    """
     p = 0.9
     P = np.array([
         [0,   p,   0,   0,   0,   1-p],
@@ -51,8 +57,7 @@ def fig3() -> None:
     
     # collapsed transition matrix
     pi = stationary_distribution(P)
-    Pi = np.diag(pi)
-    Pbar = np.linalg.solve(V.T @ Pi @ V, V.T @ Pi @ P @ V)
+    Pbar, _ = collapsing(P, V)
 
     # simulate the lifted Markov chain
     x0 = np.random.choice(n, p=pi)
@@ -84,6 +89,11 @@ def fig3() -> None:
     plt.savefig('estimation_errors.pdf')
 
 def fig4() -> None:
+    """Reproduce Fig. 4: empirical mean capture time vs. number of trials for P_bar and lifted P.
+
+    For P_bar the mean converges to M(P_bar); for the lifted P it converges to M^lift(P),
+    not M(P), demonstrating that the lifted Kemeny constant is the correct performance metric.
+    """
     Pbar = np.array([[0, 1, 0, 0], [0.5, 0, 0.5, 0], [0, 0.5, 0, 0.5], [0, 0, 1, 0]])
     pi_bar = stationary_distribution(Pbar)
     m = Pbar.shape[0]
@@ -147,6 +157,7 @@ def fig4() -> None:
     ax.plot(trials, mean_lift, label=r'Empirical Mean Capture Time $P$', color='orange')
     ax.axhline(kemeny(Pbar),        linestyle='--', label=r'$\mathcal{M}(\bar{P})$')
     ax.axhline(lifted_kemeny(P, V), linestyle='--', label=r'$\mathcal{M}^{\mathrm{lift}}(P)$', color='orange')
+    ax.axhline(kemeny(P),           linestyle='--', label=r'$\mathcal{M}(P)$', color='green')
     ax.set_xlabel('Number of Trials')
     ax.set_ylabel('Mean Capture Time')
     ax.legend()
@@ -155,5 +166,5 @@ def fig4() -> None:
 
 if __name__ == "__main__":
     # fig2()
-    # fig3()
-    fig4()
+    fig3()
+    # fig4()
