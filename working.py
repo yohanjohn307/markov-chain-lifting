@@ -1,5 +1,6 @@
 
 import numpy as np
+import cvxpy as cp
 
 def _check_stochastic(P: np.ndarray) -> None:
     if P.ndim != 2 or P.shape[0] != P.shape[1]:
@@ -18,6 +19,19 @@ def _check_mapping(V: np.ndarray, n: int | None = None) -> None:
         raise ValueError("each row of V must sum to 1 (each virtual state maps to exactly one physical node)")
     if n is not None and V.shape[0] != n:
         raise ValueError(f"V has {V.shape[0]} rows but P has {n} states")
+
+def _check_ergodic_flow(Q: np.ndarray, m: int | None = None) -> None:
+    if Q.ndim != 2 or Q.shape[0] != Q.shape[1]:
+        raise ValueError(f"expected a square matrix, got shape {Q.shape}")
+    if m is not None and Q.shape[0] != m:
+        raise ValueError(f"Q_bar must be {m}x{m} to match V, got shape {Q.shape}")
+    if not np.all(Q >= 0):
+        raise ValueError("ergodic flow matrix must have non-negative entries")
+    row_sums = Q.sum(axis=1)
+    if not np.all(row_sums > 0):
+        raise ValueError("ergodic flow matrix must have positive row sums")
+    if not np.allclose(row_sums, Q.sum(axis=0), atol=1e-4):
+        raise ValueError("ergodic flow matrix must satisfy Q 1 = Q^T 1 (equal row and column sums)")
 
 def stationary_distribution(Pbar: np.ndarray) -> np.ndarray:
     """Solve for the unique stationary distribution pi of an irreducible MC."""
@@ -137,6 +151,103 @@ def return_time_entropy(P: np.ndarray, eta: float = 0.01) -> float:
             Fk = P @ (Fk - np.diag(d))
     return H
 
+def project_Q(Q_tilde: np.ndarray, Q_bar: np.ndarray, V: np.ndarray, epsilon: float = 1e-6) -> np.ndarray:
+    """Project Q_tilde onto the feasible set of liftings of Q_bar (Eq. 33).
+
+    Solves: min ||Q - Q_tilde||_F  subject to  Q 1_n = Q^T 1_n (balanced flow),
+    epsilon * V ceil(Q_bar) V^T <= Q <= V ceil(Q_bar) V^T (graph-compatible bounds),
+    and V^T Q V = Q_bar (valid lifting of the physical ergodic flow).
+
+    Q_tilde is the n x n gradient-descent iterate; Q_bar is the m x m physical ergodic
+    flow matrix (Q_bar = diag(pi_bar) P_bar); V is the n x m binary mapping matrix.
+    """
+    _check_ergodic_flow(Q_bar, m=V.shape[1])
+    _check_mapping(V)
+    n = V.shape[0]
+    U = V @ np.ceil(Q_bar) @ V.T  # binary upper-bound matrix (graph structure)
+
+    Q = cp.Variable((n, n))
+    constraints = [
+        Q @ np.ones(n) == Q.T @ np.ones(n),   # row sums == column sums
+        Q >= epsilon * U,                        # reducibility: all edges stay positive
+        Q <= U,                                  # graph-compatibility: no new edges
+        V.T @ Q @ V == Q_bar,                   # valid lifting (Eq. 13)
+    ]
+    prob = cp.Problem(cp.Minimize(cp.sum_squares(Q - Q_tilde)), constraints)
+    prob.solve()
+    if Q.value is None:
+        raise RuntimeError("project_Q: QP did not converge; check that Q_bar is a valid ergodic flow for V")
+    return np.maximum(Q.value, 0.0)  # clip sub-zero noise at non-edge entries
+
+def _grad_lifted_kemeny(Q: np.ndarray, V: np.ndarray) -> tuple[float, np.ndarray]:
+    """Compute M^lift and its gradient w.r.t. Q via the adjoint method (Prop. 11, Eq. 34-35).
+
+    For each physical node j:
+      - Forward solve:  [Pi - Q(I - D_j)] m_Ej = pi        (Eq. 21 rewritten in Q)
+      - Adjoint solve:  [Pi - (I - D_j) Q^T] lambda_j = -pi_bar_j * pi  (Eq. 35)
+      - Gradient term:  [(pi_bar_j I + Lambda_j) m_Ej - lambda_j] 1^T
+                        - lambda_j (m_Ej)^T (I - D_j)                   (Eq. 34)
+    """
+    n, m = V.shape
+    pi     = Q.sum(axis=1)       # virtual stationary distribution pi = Q 1_n
+    Pi     = np.diag(pi)
+    pi_bar = V.T @ pi            # physical stationary distribution
+    In     = np.eye(n)
+
+    M_val = 0.0
+    grad  = np.zeros((n, n))
+    for j in range(m):
+        D_j   = np.diag(V[:, j])
+        I_Dj  = In - D_j
+        pib_j = float(pi_bar[j])
+
+        # Forward: [Pi - Q(I - D_j)] m_Ej = pi
+        m_Ej  = np.linalg.solve(Pi - Q @ I_Dj, pi)
+        M_val += pib_j * float(pi @ m_Ej)
+
+        # Adjoint: [Pi - (I - D_j) Q^T] lambda_j = -pi_bar_j * pi  (Eq. 35)
+        lam_j = np.linalg.solve(Pi - I_Dj @ Q.T, -pib_j * pi)
+
+        # Gradient contribution (Eq. 34)
+        u_j   = (pib_j * In + np.diag(lam_j)) @ m_Ej - lam_j
+        grad += np.outer(u_j, np.ones(n)) - np.outer(lam_j, m_Ej) @ I_Dj
+
+    return M_val, grad
+
+def projected_gradient_descent(
+    Q0: np.ndarray,
+    Q_bar: np.ndarray,
+    V: np.ndarray,
+    alpha: float = 1e-3,
+    n_iter: int = 100,
+    tol: float = 1e-6,
+    epsilon: float = 1e-6,
+) -> tuple[np.ndarray, list[float]]:
+    """Minimize M^lift(P) over liftings of Q_bar via projected gradient descent (Eq. 32-33).
+
+    Each iteration:
+      Q_tilde    = Q_k - alpha * grad_Q M^lift(Q_k)    (analytical gradient, Eq. 34-35)
+      Q_{k+1}   = project_Q(Q_tilde, Q_bar, V, epsilon) (QP projection, Eq. 33)
+
+    Q0 is the required initial n x n ergodic flow matrix (must be a valid lifting of Q_bar).
+    Returns the final Q and the history of M^lift values at each iterate.
+    """
+    _check_ergodic_flow(Q_bar, m=V.shape[1])
+    _check_mapping(V)
+    Q = Q0.copy()
+
+    history: list[float] = []
+    for _ in range(n_iter):
+        M, grad = _grad_lifted_kemeny(Q, V)
+        history.append(M)
+
+        if len(history) > 1 and abs(history[-1] - history[-2]) < tol:
+            break
+
+        Q = project_Q(Q - alpha * grad, Q_bar, V, epsilon)
+
+    return Q, history
+
 def collapsing(P: np.ndarray, V: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Collapse the lifted transition matrix P to the physical space using the mapping matrix V.
     Return the collapsed transition matrix Pbar and the stationary distribution pi_bar of the collapsed MC."""
@@ -151,7 +262,7 @@ if __name__ == "__main__":
     print("Stationary distribution:", stationary_distribution(Pbar))
     print("Kemeny's constant:", kemeny(Pbar))
 
-    p = 1.0
+    p = 0.9
     P = np.array([
         [0,   p,   0,   0,   0,   1-p],
         [1-p, 0,   p,   0,   0,   0  ],
@@ -171,3 +282,11 @@ if __name__ == "__main__":
     print("Stationary distribution:", stationary_distribution(P))
     print("Kemeny's constant:", kemeny(P))
     print("Lifted Kemeny's constant:", lifted_kemeny(P, V))
+
+    P_collapsed, pi_collapsed = collapsing(P, V)
+    print("P collapsed:", P_collapsed)
+    print("pi collapsed:", pi_collapsed)
+    
+    tau = np.array([3, 3, 3, 3])
+    print("Stackelberg metric:", stackelberg(Pbar, tau))
+    print("Lifted Stackelberg metric:", lifted_stackelberg(P, V, tau))
