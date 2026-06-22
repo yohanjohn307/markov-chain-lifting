@@ -151,6 +151,85 @@ def return_time_entropy(P: np.ndarray, eta: float = 0.01) -> float:
             Fk = P @ (Fk - np.diag(d))
     return H
 
+def erdos_renyi_graph(m: int, p: float, seed: int | None = None) -> np.ndarray:
+    """Sample a connected undirected Erdős-Rényi graph G(m, p).
+
+    Re-samples until the graph is connected (required for irreducible Markov chains).
+
+    Args:
+        m:    number of nodes
+        p:    edge probability
+        seed: random seed
+
+    Returns:
+        A: (m, m) symmetric binary adjacency matrix with ones on the diagonal (self-loops)
+    """
+    rng = np.random.default_rng(seed)
+    for _ in range(10_000):
+        U = (rng.random((m, m)) < p).astype(float)
+        A = np.triu(U, k=1)
+        A = A + A.T
+        np.fill_diagonal(A, 1)
+        visited = {0}
+        queue = [0]
+        while queue:
+            v = queue.pop()
+            for u in np.where(A[v] > 0)[0]:
+                if u not in visited:
+                    visited.add(u)
+                    queue.append(u)
+        if len(visited) == m:
+            return A
+    raise RuntimeError(f"Could not generate a connected G({m}, {p}) after 10000 tries; increase p")
+
+
+def random_chain(A: np.ndarray, seed: int | None = None) -> np.ndarray:
+    """Generate a random irreducible Markov chain on a graph.
+
+    Each row of P is sampled from a symmetric Dirichlet(1) distribution over the
+    neighbours indicated by A, so every compatible transition matrix is reachable.
+
+    Args:
+        A:    (m, m) symmetric binary adjacency matrix (from erdos_renyi_graph)
+        seed: random seed
+
+    Returns:
+        P: (m, m) row-stochastic transition matrix with P[i, j] = 0 when A[i, j] = 0
+    """
+    rng = np.random.default_rng(seed)
+    m = A.shape[0]
+    P = np.zeros((m, m))
+    for i in range(m):
+        nbrs = np.where(A[i] > 0)[0]
+        weights = rng.exponential(1.0, size=len(nbrs))   # Dirichlet(1,...,1) via normalised Exponentials
+        P[i, nbrs] = weights / weights.sum()
+    return P
+
+
+def degree_lifting(A: np.ndarray) -> np.ndarray:
+    """Build the degree-lifting mapping matrix for a graph.
+
+    Node j gets exactly deg(j) virtual states — one per incident edge — so the
+    total number of virtual states equals the number of edge-endpoints, i.e.,
+    n = sum_j deg(j) = 2 |E|.  Virtual states are ordered by physical node:
+    the first deg(0) rows of V correspond to node 0, the next deg(1) to node 1, etc.
+
+    Args:
+        A: (m, m) symmetric binary adjacency matrix
+
+    Returns:
+        V: (n, m) binary mapping matrix with exactly one 1 per row
+    """
+    deg = (A - np.diag(np.diag(A))).sum(axis=1).astype(int)
+    n = int(deg.sum())
+    m = A.shape[0]
+    V = np.zeros((n, m), dtype=float)
+    idx = 0
+    for j, d in enumerate(deg):
+        V[idx:idx + d, j] = 1.0
+        idx += d
+    return V
+
 def project_Q(Q_tilde: np.ndarray, Q_bar: np.ndarray, V: np.ndarray, epsilon: float = 1e-6) -> np.ndarray:
     """Project Q_tilde onto the feasible set of liftings of Q_bar (Eq. 33).
 
@@ -218,7 +297,7 @@ def projected_gradient_descent(
     Q0: np.ndarray,
     Q_bar: np.ndarray,
     V: np.ndarray,
-    alpha: float = 1e-3,
+    alpha: float = 1e-2,
     n_iter: int = 100,
     tol: float = 1e-6,
     epsilon: float = 1e-6,
@@ -290,3 +369,11 @@ if __name__ == "__main__":
     tau = np.array([3, 3, 3, 3])
     print("Stackelberg metric:", stackelberg(Pbar, tau))
     print("Lifted Stackelberg metric:", lifted_stackelberg(P, V, tau))
+
+    A = erdos_renyi_graph(5, 0.1, seed=0)
+    print("Erdős-Rényi graph adjacency matrix:\n", A)
+    P_random = random_chain(A, seed=0)
+    _check_stochastic(P_random)
+    print("Random irreducible Markov chain on the graph:\n", P_random)
+    V_degree = degree_lifting(A)
+    print("Degree-lifting mapping matrix:\n", V_degree)
