@@ -1,7 +1,7 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-from working import stationary_distribution, kemeny, lifted_kemeny, collapsing
+from working import stationary_distribution, kemeny, lifted_kemeny, collapsing, erdos_renyi_graph
 
 def fig2() -> None:
     """Reproduce Fig. 2: Kemeny constant of the lifted MC vs. transition probability p."""
@@ -164,7 +164,26 @@ def fig4() -> None:
     plt.tight_layout()
     plt.savefig('mean_capture_time.pdf')
 
+def fig_random_graph(m: int = 8, p: float = 0.4, seed: int = 0) -> None:
+    """Plot a randomly generated Erdős-Rényi graph G(m, p) with self-loops."""
+    import networkx as nx
+    A = erdos_renyi_graph(m, p, seed=seed)
+
+    G = nx.from_numpy_array(A)
+    off_deg = (A - np.diag(np.diag(A))).sum(axis=1).astype(int)
+    pos = nx.spring_layout(G, seed=seed)
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    nx.draw_networkx(G, pos=pos, ax=ax,
+                     node_color=off_deg, cmap='viridis',
+                     node_size=700, font_color='white', font_weight='bold')
+    ax.set_title(f'Erdős–Rényi $G({m},\\ {p})$, seed={seed}', pad=12)
+    plt.tight_layout()
+    plt.savefig('random_graph.pdf')
+
+
 if __name__ == "__main__":
     # fig2()
-    fig3()
+    # fig3()
     # fig4()
+    fig_random_graph()
