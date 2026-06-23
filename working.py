@@ -2,6 +2,13 @@
 import numpy as np
 import cvxpy as cp
 
+try:
+    import jax
+    import jax.numpy as jnp
+except ImportError:
+    jax = None   # type: ignore[assignment]
+    jnp = None   # type: ignore[assignment]
+
 def _check_stochastic(P: np.ndarray) -> None:
     if P.ndim != 2 or P.shape[0] != P.shape[1]:
         raise ValueError(f"expected a square matrix, got shape {P.shape}")
@@ -151,6 +158,29 @@ def return_time_entropy(P: np.ndarray, eta: float = 0.01) -> float:
             Fk = P @ (Fk - np.diag(d))
     return H
 
+def lifted_return_time_entropy(P: np.ndarray, V: np.ndarray, eta: float = 0.01) -> float:
+    """Compute the truncated lifted Return-Time Entropy:
+        H^lift(P) = -sum_j pi_bar_j * sum_{k=1}^{K_eta} R_k(j) log R_k(j)
+    where K_eta = ceil(1 / (eta * pi_bar_min)) - 1.
+    """
+    _check_stochastic(P)
+    _check_mapping(V, n=P.shape[0])
+    pi = stationary_distribution(P)
+    pi_bar = V.T @ pi
+    K_eta = int(np.ceil(1.0 / (eta * pi_bar.min()))) - 1
+    V_comp = 1.0 - V  # (1_n 1_m^T - V): zeros out target-set entries between steps
+
+    H = 0.0
+    Fk_lift = P @ V  # F_1^lift = PV
+    for k in range(1, K_eta + 1):
+        # R_k(j) = (1/pi_bar_j) * sum_{i in E_j} pi_i * F^lift_k(i, j)
+        Rk = (V * pi[:, np.newaxis] * Fk_lift).sum(axis=0) / pi_bar
+        mask = Rk > 0
+        H -= float(np.sum(pi_bar[mask] * Rk[mask] * np.log(Rk[mask])))
+        if k < K_eta:
+            Fk_lift = P @ (Fk_lift * V_comp)
+    return H
+
 def erdos_renyi_graph(m: int, p: float, seed: int | None = None) -> np.ndarray:
     """Sample a connected undirected Erdős-Rényi graph G(m, p).
 
@@ -258,19 +288,30 @@ def project_Q(Q_tilde: np.ndarray, Q_bar: np.ndarray, V: np.ndarray, epsilon: fl
         raise RuntimeError("project_Q: QP did not converge; check that Q_bar is a valid ergodic flow for V")
     return np.maximum(Q.value, 0.0)  # clip sub-zero noise at non-edge entries
 
-def _grad_lifted_kemeny(Q: np.ndarray, V: np.ndarray) -> tuple[float, np.ndarray]:
-    """Compute M^lift and its gradient w.r.t. Q via the adjoint method (Prop. 11, Eq. 34-35).
+def _grad_kemeny(Qbar: np.ndarray) -> tuple[float, np.ndarray]:
+    """Compute M and its gradient w.r.t. Qbar via the adjoint method
+    """
+    m = Qbar.shape[0]
+    pi_bar = Qbar.sum(axis=1)
+    Pi_bar = np.diag(pi_bar)
+    grad = np.zeros((m, m))
+    M = 0
+    for j in range(m):
+        gamma_j = np.ones(m)
+        gamma_j[j] = 0
+        Gamma_j = np.diag(gamma_j)
+        m_j = np.linalg.solve(Pi_bar - Qbar @ Gamma_j, pi_bar)
+        lambda_j = -pi_bar[j] * np.linalg.solve(Pi_bar - Gamma_j @ Qbar.T, pi_bar)
+        M += pi_bar[j] * (pi_bar @ m_j)
+        grad -= np.outer(lambda_j, m_j) @ Gamma_j
+    return M, grad
 
-    For each physical node j:
-      - Forward solve:  [Pi - Q(I - D_j)] m_Ej = pi        (Eq. 21 rewritten in Q)
-      - Adjoint solve:  [Pi - (I - D_j) Q^T] lambda_j = -pi_bar_j * pi  (Eq. 35)
-      - Gradient term:  [(pi_bar_j I + Lambda_j) m_Ej - lambda_j] 1^T
-                        - lambda_j (m_Ej)^T (I - D_j)                   (Eq. 34)
+def _grad_lifted_kemeny(Q: np.ndarray, V: np.ndarray, pi_bar: np.ndarray) -> tuple[float, np.ndarray]:
+    """Compute M^lift and its gradient w.r.t. Q via the adjoint method
     """
     n, m = V.shape
     pi     = Q.sum(axis=1)       # virtual stationary distribution pi = Q 1_n
     Pi     = np.diag(pi)
-    pi_bar = V.T @ pi            # physical stationary distribution
     In     = np.eye(n)
 
     M_val = 0.0
@@ -293,23 +334,102 @@ def _grad_lifted_kemeny(Q: np.ndarray, V: np.ndarray) -> tuple[float, np.ndarray
 
     return M_val, grad
 
+def _lifted_stackelberg_Q(Q: np.ndarray, V: np.ndarray, tau: np.ndarray):
+    """JAX-compatible lifted Stackelberg metric as a function of ergodic flow Q.
+
+    V and tau are treated as static constants; only Q is traced by jax.grad.
+    """
+    pi = Q.sum(axis=1)
+    P = Q / pi[:, None]
+    n, m = V.shape
+    tau_max = int(tau.max())
+    Psi_lift = jnp.zeros((n, m))
+    Fk_lift = P @ V
+    V_comp = 1.0 - V
+    for k in range(1, tau_max + 1):
+        col_mask = jnp.array(tau >= k)[None, :].astype(Q.dtype)
+        Psi_lift = Psi_lift + Fk_lift * col_mask
+        if k < tau_max:
+            Fk_lift = P @ (Fk_lift * V_comp)
+    return jnp.min(Psi_lift)
+
+
+def _grad_lifted_stackelberg(Q: np.ndarray, V: np.ndarray, tau: np.ndarray) -> tuple[float, np.ndarray]:
+    """Compute lifted Stackelberg value and gradient w.r.t. Q via JAX autodiff.
+
+    Returns (value, gradient).  To maximize J^lift, minimize the negation:
+        grad_fn = lambda Q, V: tuple(-x for x in _grad_lifted_stackelberg(Q, V, tau))
+    """
+    if jax is None:
+        raise ImportError("JAX is required for this gradient; install with: pip install jax")
+    tau = np.asarray(tau, dtype=int)
+    fn = lambda Q: _lifted_stackelberg_Q(Q, V, tau)
+    val, grad = jax.value_and_grad(fn)(jnp.array(Q))
+    return float(val), np.array(grad)
+
+
+def _lifted_rte_Q(Q: np.ndarray, V: np.ndarray, pi_bar: np.ndarray, K_eta: int):
+    """JAX-compatible truncated lifted RTE as a function of ergodic flow Q.
+
+    pi_bar and K_eta are treated as static constants (fixed by the optimization constraint).
+    Uses the jnp.where trick to avoid log(0) in the gradient.
+    """
+    pi = Q.sum(axis=1)
+    P = Q / pi[:, None]
+    V_comp = 1.0 - V
+    H = jnp.zeros(())
+    Fk_lift = P @ V
+    for k in range(1, K_eta + 1):
+        Rk = (V * pi[:, None] * Fk_lift).sum(axis=0) / pi_bar
+        safe_Rk = jnp.where(Rk > 0, Rk, 1.0)          # avoid log(0) in both forward and backward pass
+        H = H - jnp.sum(jnp.where(Rk > 0, pi_bar * Rk * jnp.log(safe_Rk), 0.0))
+        if k < K_eta:
+            Fk_lift = P @ (Fk_lift * V_comp)
+    return H
+
+
+def _grad_lifted_rte(Q: np.ndarray, V: np.ndarray, pi_bar: np.ndarray, eta: float) -> tuple[float, np.ndarray]:
+    """Compute truncated lifted RTE value and gradient w.r.t. Q via JAX autodiff.
+
+    pi_bar = Q_bar.sum(axis=1) is fixed by the optimization constraint; pass it in so
+    K_eta is determined once from pi_bar rather than re-derived from Q on every call.
+
+    Returns (value, gradient).  To maximize H^lift, minimize the negation:
+        grad_fn = lambda Q, V: tuple(-x for x in _grad_lifted_rte(Q, V, pi_bar, eta))
+    """
+    if jax is None:
+        raise ImportError("JAX is required for this gradient; install with: pip install jax")
+    K_eta = int(np.ceil(1.0 / (eta * float(pi_bar.min())))) - 1
+    fn = lambda Q: _lifted_rte_Q(Q, V, pi_bar, K_eta)
+    val, grad = jax.value_and_grad(fn)(jnp.array(Q))
+    return float(val), np.array(grad)
+
+
 def projected_gradient_descent(
     Q0: np.ndarray,
     Q_bar: np.ndarray,
     V: np.ndarray,
+    grad_fn,
     alpha: float = 1e-2,
     n_iter: int = 100,
     tol: float = 1e-6,
     epsilon: float = 1e-6,
 ) -> tuple[np.ndarray, list[float]]:
-    """Minimize M^lift(P) over liftings of Q_bar via projected gradient descent (Eq. 32-33).
+    """Minimize an objective over liftings of Q_bar via projected gradient descent (Eq. 32-33).
 
     Each iteration:
-      Q_tilde    = Q_k - alpha * grad_Q M^lift(Q_k)    (analytical gradient, Eq. 34-35)
-      Q_{k+1}   = project_Q(Q_tilde, Q_bar, V, epsilon) (QP projection, Eq. 33)
+      Q_tilde  = Q_k - alpha * grad_fn(Q_k, V)[1]    (gradient step)
+      Q_{k+1} = project_Q(Q_tilde, Q_bar, V, epsilon) (QP projection, Eq. 33)
 
-    Q0 is the required initial n x n ergodic flow matrix (must be a valid lifting of Q_bar).
-    Returns the final Q and the history of M^lift values at each iterate.
+    grad_fn(Q, V) -> (value, gradient) computes the objective and its gradient w.r.t. Q.
+    pi_bar = Q_bar.sum(axis=1) is fixed by the constraint and should be captured in grad_fn:
+        pi_bar = Q_bar.sum(axis=1)
+        grad_fn = lambda Q, V: _grad_lifted_kemeny(Q, V, pi_bar)
+        grad_fn = lambda Q, V: tuple(-x for x in _grad_lifted_stackelberg(Q, V, tau))
+        grad_fn = lambda Q, V: tuple(-x for x in _grad_lifted_rte(Q, V, pi_bar, eta))
+    Negate the output for metrics to be maximized (Stackelberg, RTE).
+
+    Q0 must be a valid lifting of Q_bar.  Returns (final Q, history of objective values).
     """
     _check_ergodic_flow(Q_bar, m=V.shape[1])
     _check_mapping(V)
@@ -317,8 +437,8 @@ def projected_gradient_descent(
 
     history: list[float] = []
     for _ in range(n_iter):
-        M, grad = _grad_lifted_kemeny(Q, V)
-        history.append(M)
+        val, grad = grad_fn(Q, V)
+        history.append(val)
 
         if len(history) > 1 and abs(history[-1] - history[-2]) < tol:
             break
@@ -334,7 +454,9 @@ def collapsing(P: np.ndarray, V: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     _check_mapping(V, n=P.shape[0])
     pi = stationary_distribution(P)
     Pi = np.diag(pi)
-    return np.linalg.solve(V.T @ Pi @ V, V.T @ Pi @ P @ V), V.T @ pi
+    Pbar = np.linalg.solve(V.T @ Pi @ V, V.T @ Pi @ P @ V)
+    pi_bar = V.T @ pi
+    return Pbar, pi_bar
 
 if __name__ == "__main__":
     Pbar = np.array([[0, 1, 0, 0], [0.5, 0, 0.5, 0], [0, 0.5, 0, 0.5], [0, 0, 1, 0]])
@@ -369,6 +491,9 @@ if __name__ == "__main__":
     tau = np.array([3, 3, 3, 3])
     print("Stackelberg metric:", stackelberg(Pbar, tau))
     print("Lifted Stackelberg metric:", lifted_stackelberg(P, V, tau))
+
+    print("Return-time entropy:", return_time_entropy(Pbar, eta=0.01))
+    print("Lifted return-time entropy:", lifted_return_time_entropy(P, V, eta=0.01))
 
     A = erdos_renyi_graph(5, 0.1, seed=0)
     print("Erdős-Rényi graph adjacency matrix:\n", A)
