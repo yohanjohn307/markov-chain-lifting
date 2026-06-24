@@ -1,7 +1,11 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-from working import stationary_distribution, kemeny, lifted_kemeny, collapsing, erdos_renyi_graph
+
+from markov import stationary_distribution, collapsing
+from metrics import kemeny, lifted_kemeny
+from graph import erdos_renyi_graph
+
 
 def fig2() -> None:
     """Reproduce Fig. 2: Kemeny constant of the lifted MC vs. transition probability p."""
@@ -54,7 +58,7 @@ def fig3() -> None:
     ])
     n, m = V.shape
     virtual_to_physical = V.argmax(axis=1).tolist()
-    
+
     # collapsed transition matrix
     pi = stationary_distribution(P)
     Pbar, _ = collapsing(P, V)
