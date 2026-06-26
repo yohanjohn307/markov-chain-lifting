@@ -1,10 +1,23 @@
 
+import time as time
 import numpy as np
 import matplotlib.pyplot as plt
+import networkx as nx
+import pandas as pd
+import joypy
 
 from markov import stationary_distribution, collapsing
-from metrics import kemeny, lifted_kemeny
-from graph import erdos_renyi_graph
+from metrics import kemeny, lifted_kemeny, stackelberg, lifted_stackelberg, return_time_entropy, lifted_return_time_entropy
+from graph import erdos_renyi_graph, random_chain, degree_lifting
+from optimize import (
+    project_Q,
+    project_Q_bar,
+    _grad_kemeny,
+    _grad_lifted_kemeny,
+    make_grad_lifted_rte,
+    make_grad_lifted_stackelberg,
+    projected_gradient_descent,
+)
 
 
 def fig2() -> None:
@@ -170,7 +183,6 @@ def fig4() -> None:
 
 def fig_random_graph(m: int = 8, p: float = 0.4, seed: int = 0) -> None:
     """Plot a randomly generated Erdős-Rényi graph G(m, p) with self-loops."""
-    import networkx as nx
     A = erdos_renyi_graph(m, p, seed=seed)
 
     G = nx.from_numpy_array(A)
@@ -186,8 +198,596 @@ def fig_random_graph(m: int = 8, p: float = 0.4, seed: int = 0) -> None:
     plt.savefig('random_graph.pdf')
 
 
+def fig_erdos_renyi_kemeny_improvement(
+    m: int = 6,
+    p_values=None,
+    n_graphs: int = 20,
+    n_init: int = 3,
+    n_iter: int = 150,
+    alpha: float = 2e-3,
+    tol: float = 1e-5,
+    seed: int = 42,
+) -> None:
+    """Ridgeline plot of Kemeny improvement via degree lifting vs Erdős-Rényi edge probability p.
+
+    For each p, generates n_graphs random connected G(m, p) graphs, each with a random
+    target stationary distribution.  For every graph:
+      1. Optimises the Kemeny constant in the physical space via PGD (n_init starts).
+      2. Applies degree lifting and optimises the lifted Kemeny constant via PGD (n_init starts).
+      3. Records M(P_bar*) - M^lift(P*).
+    Results are visualised as a joypy ridgeline plot across trials.
+    """
+    if p_values is None:
+        p_values = np.linspace(0.3, 0.8, 6)
+
+    all_diffs: list[list[float]] = []
+
+    for p_idx, p in enumerate(p_values):
+        rng = np.random.default_rng(seed * 1000 + p_idx)
+        diffs_p: list[float] = []
+        attempts = 0
+        max_attempts = n_graphs * 8
+        while len(diffs_p) < n_graphs and attempts < max_attempts:
+            attempts += 1
+            try:
+                A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
+
+                # Sample a random stationary distribution.  Concentration parameter 5
+                # keeps entries bounded away from zero (min entry ≈ 1/(2m) with high prob),
+                # which prevents near-singular gradient systems on sparse graphs.
+                pi_bar = rng.dirichlet(5 * np.ones(m))
+
+                # ------------------------------------------------------------------
+                # 1. Optimise Kemeny constant in physical space
+                # ------------------------------------------------------------------
+                best_phys_val = np.inf
+                best_Q_bar = None
+
+                for _ in range(n_init):
+                    P0 = random_chain(A, seed=int(rng.integers(1 << 31)))
+                    pi0 = stationary_distribution(P0)
+                    Q0 = np.diag(pi0) @ P0
+                    try:
+                        Q0 = project_Q_bar(Q0, A, pi_bar)
+                    except RuntimeError:
+                        continue
+
+                    Q_opt, hist = projected_gradient_descent(
+                        Q0,
+                        _grad_kemeny,
+                        lambda Q, _A=A, _pi=pi_bar: project_Q_bar(Q, _A, _pi),
+                        alpha, n_iter, tol,
+                    )
+                    if hist and hist[-1] < best_phys_val:
+                        best_phys_val = hist[-1]
+                        best_Q_bar = Q_opt
+
+                if best_Q_bar is None:
+                    continue
+
+                pi_bar_opt = best_Q_bar.sum(axis=1)
+                P_bar_opt = best_Q_bar / pi_bar_opt[:, None]
+                kemeny_phys = kemeny(P_bar_opt)
+
+                # ------------------------------------------------------------------
+                # 2. Build degree lifting and optimise lifted Kemeny constant
+                # ------------------------------------------------------------------
+                V = degree_lifting(A)
+                # lifted adjacency: virtual state i connected to j iff their physical nodes are
+                A_lift = (V @ np.ceil(np.maximum(best_Q_bar, 0)) @ V.T).astype(int)
+                np.fill_diagonal(A_lift, 1)  # ensure self-loops for irreducibility
+
+                best_lift_val = np.inf
+                best_Q_lift = None
+
+                for _ in range(n_init):
+                    try:
+                        P0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
+                    except Exception:
+                        continue
+                    pi0_lift = stationary_distribution(P0_lift)
+                    Q0_lift = np.diag(pi0_lift) @ P0_lift
+                    try:
+                        Q0_lift_proj = project_Q(Q0_lift, best_Q_bar, V)
+                    except RuntimeError:
+                        continue
+
+                    Q_lift_opt, hist_lift = projected_gradient_descent(
+                        Q0_lift_proj,
+                        lambda Q, _V=V, _pi=pi_bar_opt: _grad_lifted_kemeny(Q, _V, _pi),
+                        lambda Q, _Qb=best_Q_bar, _V=V: project_Q(Q, _Qb, _V),
+                        alpha, n_iter, tol,
+                    )
+                    if hist_lift and hist_lift[-1] < best_lift_val:
+                        best_lift_val = hist_lift[-1]
+                        best_Q_lift = Q_lift_opt
+
+                if best_Q_lift is None:
+                    continue
+
+                pi_lift_opt = best_Q_lift.sum(axis=1)
+                P_lift_opt = best_Q_lift / pi_lift_opt[:, None]
+                kemeny_lift = lifted_kemeny(P_lift_opt, V)
+
+                diff = kemeny_phys - kemeny_lift
+                # sanity: both metrics must be positive and improvement non-negative
+                # (Theorem 5 guarantees the latter; violations indicate non-convergence)
+                if kemeny_phys > 0 and kemeny_lift > 0:
+                    if diff > 0:
+                        diffs_p.append(diff)
+                    else:
+                        diffs_p.append(0.0)
+
+            except Exception as e:
+                print(f"  p={p:.2f}: trial error: {e}", flush=True)
+
+        print(
+            f"p={p:.2f}: {len(diffs_p)}/{n_graphs} graphs, "
+            f"{attempts} attempts"
+            + (f",  improvement = {np.mean(diffs_p):.3f} ± {np.std(diffs_p):.3f}" if diffs_p else ""),
+            flush=True,
+        )
+        all_diffs.append(diffs_p)
+
+    # Save raw data so the plot can be re-rendered without re-running optimization
+    np.save('erdos_renyi_diffs.npy',
+            {'p_values': np.array(p_values), 'diffs': all_diffs}, allow_pickle=True)
+
+    # ------------------------------------------------------------------
+    # Ridgeline plot via joypy
+    # ------------------------------------------------------------------
+    valid_idx = [i for i, d in enumerate(all_diffs) if len(d) >= 2]
+    valid_p   = [p_values[i] for i in valid_idx]
+    valid_d   = [all_diffs[i] for i in valid_idx]
+
+    # Clip to the 1st–99th percentile of all values to prevent sparse-graph
+    # outliers from collapsing the dense-graph distributions to a sliver.
+    all_vals = [v for d in valid_d for v in d]
+    x_min    = max(0.0, float(np.percentile(all_vals, 1)))
+    x_max    = float(np.percentile(all_vals, 99)) * 1.05
+
+    # joypy expects a wide-format DataFrame: one column per ridge, rows are samples.
+    # Columns are ordered so the lowest p appears at the top of the figure
+    # (joypy draws the first column at the top).
+    df = pd.DataFrame(
+        {f'$p={p:.2f}$': pd.Series(
+            [v for v in d if x_min <= v <= x_max]   # clip outliers per-group
+        ) for p, d in zip(valid_p, valid_d)}
+    )
+    n_ridges = len(valid_p)
+    cmap     = plt.cm.viridis_r
+    colors   = [cmap(k / max(n_ridges - 1, 1)) for k in range(n_ridges)]
+
+    fig, axes = joypy.joyplot(
+        df,
+        figsize=(7, 1.0 + 0.7 * n_ridges),
+        colormap=plt.cm.viridis_r,
+        linecolor='white',
+        linewidth=0.8,
+        alpha=0.8,
+        x_range=[x_min, x_max],
+        overlap=0.4,
+    )
+    axes[-1].set_xlabel(
+        r'$\mathcal{M}(\bar{P}^*) - \mathcal{M}^{\mathrm{lift}}(P^*)$',
+        fontsize=11,
+    )
+    axes[0].set_title(
+        rf'Kemeny constant improvement via degree lifting, $G({m},\,p)$',
+        fontsize=11, pad=8,
+    )
+    # Mark zero on every sub-axis
+    for ax in axes:
+        ax.axvline(0, color='gray', lw=0.8, ls=':', zorder=0)
+
+    plt.tight_layout()
+    plt.savefig('erdos_renyi_kemeny_improvement.pdf', bbox_inches='tight')
+    plt.savefig('erdos_renyi_kemeny_improvement.png', dpi=150, bbox_inches='tight')
+    print("Saved: erdos_renyi_kemeny_improvement.pdf / .png")
+
+
+def fig_erdos_renyi_rte_improvement(
+    m: int = 6,
+    p_values=None,
+    n_graphs: int = 20,
+    n_init: int = 3,
+    n_iter: int = 150,
+    alpha: float = 2e-3,
+    eta: float = 0.05,
+    tol: float = 1e-5,
+    seed: int = 42,
+) -> None:
+    """Ridgeline plot of return-time entropy improvement via degree lifting vs Erdős-Rényi edge probability p.
+
+    For each p, generates n_graphs random connected G(m, p) graphs, each with a random
+    target stationary distribution.  For every graph:
+      1. Maximises the truncated RTE in the physical space via PGD (n_init starts).
+      2. Applies degree lifting and maximises the lifted truncated RTE via PGD (n_init starts).
+      3. Records H^lift(P*) - H(P_bar*).
+    Results are visualised as a joypy ridgeline plot across trials.
+    eta controls the RTE truncation accuracy (Eq. 42, 44); discarded probability is bounded by eta.
+    """
+    if p_values is None:
+        p_values = np.linspace(0.3, 0.8, 6)
+
+    all_diffs: list[list[float]] = []
+
+    for p_idx, p in enumerate(p_values):
+        rng = np.random.default_rng(seed * 1000 + p_idx)
+        diffs_p: list[float] = []
+        attempts = 0
+        max_attempts = n_graphs * 8
+        while len(diffs_p) < n_graphs and attempts < max_attempts:
+            attempts += 1
+            try:
+                A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
+                pi_bar = rng.dirichlet(5 * np.ones(m))
+
+                # ------------------------------------------------------------------
+                # 1. Maximise RTE in physical space (negate grad_fn to use minimizer)
+                # ------------------------------------------------------------------
+                best_phys_val = np.inf  # tracks negated RTE; lower = better (higher H)
+                best_Q_bar = None
+
+                grad_rte = make_grad_lifted_rte(np.eye(m), pi_bar, eta)
+                for _ in range(n_init):
+                    P0 = random_chain(A, seed=int(rng.integers(1 << 31)))
+                    pi0 = stationary_distribution(P0)
+                    Q0 = np.diag(pi0) @ P0
+                    try:
+                        Q0 = project_Q_bar(Q0, A, pi_bar)
+                    except RuntimeError:
+                        continue
+
+                    Q_opt, hist = projected_gradient_descent(
+                        Q0,
+                        lambda Q, f=grad_rte: tuple(-x for x in f(Q)),
+                        lambda Q, _A=A, _pi=pi_bar: project_Q_bar(Q, _A, _pi),
+                        alpha, n_iter, tol,
+                    )
+                    if hist and hist[-1] < best_phys_val:
+                        best_phys_val = hist[-1]
+                        best_Q_bar = Q_opt
+
+                if best_Q_bar is None:
+                    continue
+
+                pi_bar_opt = best_Q_bar.sum(axis=1)
+                P_bar_opt = best_Q_bar / pi_bar_opt[:, None]
+                rte_phys = return_time_entropy(P_bar_opt, eta)
+
+                # ------------------------------------------------------------------
+                # 2. Build degree lifting and maximise lifted RTE
+                # ------------------------------------------------------------------
+                V = degree_lifting(A)
+                A_lift = (V @ np.ceil(np.maximum(best_Q_bar, 0)) @ V.T).astype(int)
+                np.fill_diagonal(A_lift, 1)
+
+                best_lift_val = np.inf  # tracks negated lifted RTE
+                best_Q_lift = None
+
+                grad_lifted_rte = make_grad_lifted_rte(V, pi_bar_opt, eta)
+                for _ in range(n_init):
+                    try:
+                        P0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
+                    except Exception:
+                        continue
+                    pi0_lift = stationary_distribution(P0_lift)
+                    Q0_lift = np.diag(pi0_lift) @ P0_lift
+                    try:
+                        Q0_lift_proj = project_Q(Q0_lift, best_Q_bar, V)
+                    except RuntimeError:
+                        continue
+
+                    Q_lift_opt, hist_lift = projected_gradient_descent(
+                        Q0_lift_proj,
+                        lambda Q, f=grad_lifted_rte: tuple(-x for x in f(Q)),
+                        lambda Q, _Qb=best_Q_bar, _V=V: project_Q(Q, _Qb, _V),
+                        alpha, n_iter, tol,
+                    )
+                    if hist_lift and hist_lift[-1] < best_lift_val:
+                        best_lift_val = hist_lift[-1]
+                        best_Q_lift = Q_lift_opt
+
+                if best_Q_lift is None:
+                    continue
+
+                pi_lift_opt = best_Q_lift.sum(axis=1)
+                P_lift_opt = best_Q_lift / pi_lift_opt[:, None]
+                rte_lift = lifted_return_time_entropy(P_lift_opt, V, eta)
+
+                diff = rte_lift - rte_phys
+                # Corollary 7 guarantees diff >= 0; violations indicate non-convergence
+                if rte_phys > 0 and rte_lift > 0:
+                    if diff > 0:
+                        diffs_p.append(diff)
+                    else:
+                        diffs_p.append(0.0)
+
+            except Exception as e:
+                print(f"  p={p:.2f}: trial error: {e}", flush=True)
+
+        print(
+            f"p={p:.2f}: {len(diffs_p)}/{n_graphs} trials, "
+            f"{attempts} attempts"
+            + (f",  improvement = {np.mean(diffs_p):.3f} ± {np.std(diffs_p):.3f}" if diffs_p else ""),
+            flush=True,
+        )
+        all_diffs.append(diffs_p)
+
+    np.save('erdos_renyi_rte_diffs.npy',
+            {'p_values': np.array(p_values), 'diffs': all_diffs}, allow_pickle=True)
+
+    # ------------------------------------------------------------------
+    # Ridgeline plot via joypy
+    # ------------------------------------------------------------------
+    valid_idx = [i for i, d in enumerate(all_diffs) if len(d) >= 2]
+    valid_p   = [p_values[i] for i in valid_idx]
+    valid_d   = [all_diffs[i] for i in valid_idx]
+
+    all_vals = [v for d in valid_d for v in d]
+    x_min    = max(0.0, float(np.percentile(all_vals, 1)))
+    x_max    = float(np.percentile(all_vals, 99)) * 1.05
+
+    df = pd.DataFrame(
+        {f'$p={p:.2f}$': pd.Series(
+            [v for v in d if x_min <= v <= x_max]
+        ) for p, d in zip(valid_p, valid_d)}
+    )
+    n_ridges = len(valid_p)
+
+    fig, axes = joypy.joyplot(
+        df,
+        figsize=(7, 1.0 + 0.7 * n_ridges),
+        colormap=plt.cm.viridis_r,
+        linecolor='white',
+        linewidth=0.8,
+        alpha=0.8,
+        x_range=[x_min, x_max],
+        overlap=0.4,
+    )
+    axes[-1].set_xlabel(
+        r'$\mathcal{H}^{\mathrm{lift}}(P^*) - \mathcal{H}(\bar{P}^*)$',
+        fontsize=11,
+    )
+    axes[0].set_title(
+        rf'Return-time entropy improvement via degree lifting, $G({m},\,p)$',
+        fontsize=11, pad=8,
+    )
+    for ax in axes:
+        ax.axvline(0, color='gray', lw=0.8, ls=':', zorder=0)
+
+    plt.tight_layout()
+    plt.savefig('erdos_renyi_rte_improvement.pdf', bbox_inches='tight')
+    plt.savefig('erdos_renyi_rte_improvement.png', dpi=150, bbox_inches='tight')
+    print("Saved: erdos_renyi_rte_improvement.pdf / .png")
+
+
+def fig_erdos_renyi_stackelberg_improvement(
+    m: int = 6,
+    p_values=None,
+    n_graphs: int = 20,
+    n_init: int = 3,
+    n_iter: int = 150,
+    alpha: float = 2e-3,
+    tol: float = 1e-5,
+    seed: int = 42,
+) -> None:
+    """Ridgeline plot of Stackelberg game metric improvement via degree lifting vs Erdős-Rényi edge probability p.
+
+    For each p, generates n_graphs random connected G(m, p) graphs.  For every graph:
+      1. Maximises the Stackelberg metric in the physical space via PGD (n_init starts).
+         No stationary distribution constraint; epsilon=0 because irreducibility is
+         enforced inherently by the Stackelberg metric.
+      2. Applies degree lifting and maximises the lifted Stackelberg metric via PGD (n_init starts).
+      3. Records J^lift(P*) - J(P_bar*).
+    tau is set uniformly to the diameter of each graph (smallest duration guaranteeing
+    nonzero capture probability from any node to any other).
+    Results are visualised as a joypy ridgeline plot across trials.
+    """
+    if p_values is None:
+        p_values = np.linspace(0.3, 0.8, 6)
+
+    all_diffs: list[list[float]] = []
+
+    for p_idx, p in enumerate(p_values):
+        rng = np.random.default_rng(seed * 1000 + p_idx)
+        diffs_p: list[float] = []
+        attempts = 0
+        max_attempts = n_graphs * 8
+        while len(diffs_p) < n_graphs and attempts < max_attempts:
+            attempts += 1
+            try:
+                A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
+                A_no_self = A - np.diag(np.diag(A))
+                diameter = nx.diameter(nx.from_numpy_array(A_no_self))
+                # set attack duration equal to diameter of graph
+                tau = diameter * np.ones(m, dtype=int)
+
+                # ------------------------------------------------------------------
+                # 1. Maximise Stackelberg metric in physical space (free stationary
+                #    distribution; epsilon=0 since metric enforces irreducibility)
+                # ------------------------------------------------------------------
+                best_phys_val = np.inf  # tracks negated J; lower = better (higher J)
+                best_Q_bar = None
+
+                # V=I_m collapses _lifted_stackelberg_Q to the standard Stackelberg metric
+                grad_stackelberg = make_grad_lifted_stackelberg(np.eye(m), tau)
+                for _ in range(n_init):
+                    P0 = random_chain(A, seed=int(rng.integers(1 << 31)))
+                    pi0 = stationary_distribution(P0)
+                    Q0 = np.diag(pi0) @ P0
+                    try:
+                        Q0 = project_Q_bar(Q0, A, pi_bar=None, epsilon=0.0)
+                    except RuntimeError:
+                        continue
+
+                    Q_opt, hist = projected_gradient_descent(
+                        Q0,
+                        lambda Q, f=grad_stackelberg: tuple(-x for x in f(Q)),
+                        lambda Q, _A=A: project_Q_bar(Q, _A, pi_bar=None, epsilon=0.0),
+                        alpha, n_iter, tol,
+                    )
+                    if hist and hist[-1] < best_phys_val:
+                        best_phys_val = hist[-1]
+                        best_Q_bar = Q_opt
+
+                if best_Q_bar is None:
+                    continue
+
+                pi_bar_opt = best_Q_bar.sum(axis=1)
+                P_bar_opt = best_Q_bar / pi_bar_opt[:, None]
+                j_phys = stackelberg(P_bar_opt, tau)
+
+                # ------------------------------------------------------------------
+                # 2. Build degree lifting and maximise lifted Stackelberg metric
+                # ------------------------------------------------------------------
+                V = degree_lifting(A)
+                A_lift = (V @ np.ceil(np.maximum(best_Q_bar, 0)) @ V.T).astype(int)
+                np.fill_diagonal(A_lift, 1)
+
+                best_lift_val = np.inf  # tracks negated J^lift
+                best_Q_lift = None
+
+                grad_lifted_stb = make_grad_lifted_stackelberg(V, tau)
+                for _ in range(n_init):
+                    try:
+                        P0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
+                    except Exception:
+                        continue
+                    pi0_lift = stationary_distribution(P0_lift)
+                    Q0_lift = np.diag(pi0_lift) @ P0_lift
+                    try:
+                        Q0_lift_proj = project_Q(Q0_lift, best_Q_bar, V, epsilon=0.0)
+                    except RuntimeError:
+                        continue
+
+                    Q_lift_opt, hist_lift = projected_gradient_descent(
+                        Q0_lift_proj,
+                        lambda Q, f=grad_lifted_stb: tuple(-x for x in f(Q)),
+                        lambda Q, _Qb=best_Q_bar, _V=V: project_Q(Q, _Qb, _V, epsilon=0.0),
+                        alpha, n_iter, tol,
+                    )
+                    if hist_lift and hist_lift[-1] < best_lift_val:
+                        best_lift_val = hist_lift[-1]
+                        best_Q_lift = Q_lift_opt
+
+                if best_Q_lift is None:
+                    continue
+
+                pi_lift_opt = best_Q_lift.sum(axis=1)
+                P_lift_opt = best_Q_lift / pi_lift_opt[:, None]
+                j_lift = lifted_stackelberg(P_lift_opt, V, tau)
+
+                diff = j_lift - j_phys
+                # Corollary 7 guarantees diff >= 0; violations indicate non-convergence
+                if j_phys > 0 and j_lift > 0:
+                    if diff > 0:
+                        diffs_p.append(diff)
+                    else:
+                        diffs_p.append(0.0)
+
+            except Exception as e:
+                print(f"  p={p:.2f}: trial error: {e}", flush=True)
+
+        print(
+            f"p={p:.2f}: {len(diffs_p)}/{n_graphs} graphs, "
+            f"{attempts} attempts"
+            + (f",  improvement = {np.mean(diffs_p):.3f} ± {np.std(diffs_p):.3f}" if diffs_p else ""),
+            flush=True,
+        )
+        all_diffs.append(diffs_p)
+
+    np.save('erdos_renyi_stackelberg_diffs.npy',
+            {'p_values': np.array(p_values), 'diffs': all_diffs}, allow_pickle=True)
+
+    # ------------------------------------------------------------------
+    # Ridgeline plot via joypy
+    # ------------------------------------------------------------------
+    valid_idx = [i for i, d in enumerate(all_diffs) if len(d) >= 2]
+    valid_p   = [p_values[i] for i in valid_idx]
+    valid_d   = [all_diffs[i] for i in valid_idx]
+
+    all_vals = [v for d in valid_d for v in d]
+    x_min    = max(0.0, float(np.percentile(all_vals, 1)))
+    x_max    = float(np.percentile(all_vals, 99)) * 1.05
+
+    df = pd.DataFrame(
+        {f'$p={p:.2f}$': pd.Series(
+            [v for v in d if x_min <= v <= x_max]
+        ) for p, d in zip(valid_p, valid_d)}
+    )
+    n_ridges = len(valid_p)
+
+    fig, axes = joypy.joyplot(
+        df,
+        figsize=(7, 1.0 + 0.7 * n_ridges),
+        colormap=plt.cm.viridis_r,
+        linecolor='white',
+        linewidth=0.8,
+        alpha=0.8,
+        x_range=[x_min, x_max],
+        overlap=0.4,
+    )
+    axes[-1].set_xlabel(
+        r'$\mathcal{J}^{\mathrm{lift}}(P^*) - \mathcal{J}(\bar{P}^*)$',
+        fontsize=11,
+    )
+    axes[0].set_title(
+        rf'Stackelberg metric improvement via degree lifting, $G({m},\,p)$',
+        fontsize=11, pad=8,
+    )
+    for ax in axes:
+        ax.axvline(0, color='gray', lw=0.8, ls=':', zorder=0)
+
+    plt.tight_layout()
+    plt.savefig('erdos_renyi_stackelberg_improvement.pdf', bbox_inches='tight')
+    plt.savefig('erdos_renyi_stackelberg_improvement.png', dpi=150, bbox_inches='tight')
+    print("Saved: erdos_renyi_stackelberg_improvement.pdf / .png")
+
+
 if __name__ == "__main__":
     # fig2()
     # fig3()
     # fig4()
-    fig_random_graph()
+    # fig_random_graph()
+
+    _t0 = time.time()
+    fig_erdos_renyi_kemeny_improvement(
+        m=10,
+        p_values=np.linspace(0.2, 0.8, 4),
+        n_graphs=20,
+        n_init=10,
+        n_iter=200,
+        alpha=1e-3,
+        tol=1e-5,
+        seed=42,
+    )
+    print(f"Kemeny elapsed: {time.time() - _t0:.1f}s")
+
+    # _t0 = time.time()
+    # fig_erdos_renyi_rte_improvement(
+    #     m=6,
+    #     p_values=np.linspace(0.3, 0.8, 3),
+    #     n_graphs=5,
+    #     n_init=1,
+    #     n_iter=100,
+    #     alpha=1e-3,
+    #     eta=0.5,
+    #     tol=1e-5,
+    #     seed=42,
+    # )
+    # print(f"RTE elapsed: {time.time() - _t0:.1f}s")
+
+    # _t0 = time.time()
+    # fig_erdos_renyi_stackelberg_improvement(
+    #     m=6,
+    #     p_values=np.linspace(0.3, 0.8, 3),
+    #     n_graphs=5,
+    #     n_init=10,
+    #     n_iter=100,
+    #     alpha=1e-3,
+    #     tol=1e-5,
+    #     seed=42,
+    # )
+    # print(f"Stackelberg elapsed: {time.time() - _t0:.1f}s")

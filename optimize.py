@@ -33,27 +33,31 @@ def project_Q(Q_tilde: np.ndarray, Q_bar: np.ndarray, V: np.ndarray, epsilon: fl
 def project_Q_bar(
     Q_tilde: np.ndarray,
     Q_bar_ref: np.ndarray,
-    pi_bar: np.ndarray,
+    pi_bar: np.ndarray | None = None,
     epsilon: float = 1e-6,
 ) -> np.ndarray:
-    """Project Q_tilde onto feasible ergodic flows with fixed stationary distribution.
+    """Project Q_tilde onto feasible ergodic flows for the physical space.
 
-    Solves: min ||Q - Q_tilde||_F  subject to  Q 1_m = pi_bar,  Q^T 1_m = pi_bar,
-    epsilon * A <= Q <= A,  where A = ceil(Q_bar_ref) is the binary graph adjacency.
+    Solves: min ||Q - Q_tilde||_F  subject to  graph-compatibility and either:
+      - pi_bar provided: Q 1_m = pi_bar, Q^T 1_m = pi_bar  (fixed stationary distribution,
+        used for Kemeny and RTE)
+      - pi_bar is None:  Q 1_m = Q^T 1_m  (free stationary distribution,
+        used for Stackelberg where irreducibility is enforced by the metric)
+    In both cases: epsilon * A <= Q <= A, where A = ceil(Q_bar_ref).
     """
     m = Q_tilde.shape[0]
     A = np.ceil(Q_bar_ref)
     Q = cp.Variable((m, m))
-    constraints = [
-        Q @ np.ones(m) == pi_bar,
-        Q.T @ np.ones(m) == pi_bar,
-        Q >= epsilon * A,
-        Q <= A,
-    ]
+    ones = np.ones(m)
+    if pi_bar is not None:
+        stationarity = [Q @ ones == pi_bar, Q.T @ ones == pi_bar]
+    else:
+        stationarity = [Q @ ones == Q.T @ ones]
+    constraints = stationarity + [Q >= epsilon * A, Q <= A]
     prob = cp.Problem(cp.Minimize(cp.sum_squares(Q - Q_tilde)), constraints)
     prob.solve()
     if Q.value is None:
-        raise RuntimeError("project_Q_bar: QP did not converge; check that pi_bar is consistent with Q_bar_ref")
+        raise RuntimeError("project_Q_bar: QP did not converge; check inputs are consistent")
     return np.maximum(Q.value, 0.0)
 
 
@@ -112,43 +116,22 @@ def _lifted_stackelberg_Q(Q, V, tau):
     return jnp.min(Psi_lift)
 
 
-def _grad_lifted_stackelberg(Q: np.ndarray, V: np.ndarray, tau: np.ndarray) -> tuple[float, np.ndarray]:
-    """Compute lifted Stackelberg value and gradient w.r.t. Q via JAX autodiff.
+def make_grad_lifted_stackelberg(V: np.ndarray, tau: np.ndarray):
+    """Return a JIT-compiled gradient function for the lifted Stackelberg metric w.r.t. Q.
 
-    To maximize J^lift, negate: lambda Q: tuple(-x for x in _grad_lifted_stackelberg(Q, V, tau))
+    Call once before the optimization loop; the returned callable reuses the compiled
+    kernel on every iteration without retracing.
+    To maximize J^lift, negate the returned function's outputs.
     """
-    if jax is None:
-        raise ImportError("JAX is required for this gradient; install with: pip install jax")
     tau = np.asarray(tau, dtype=int)
-    val, grad = jax.value_and_grad(lambda Q: _lifted_stackelberg_Q(Q, V, tau))(jnp.array(Q))
-    return float(val), np.array(grad)
+    V_j = jnp.array(V)
+    _compiled = jax.jit(jax.value_and_grad(lambda Q: _lifted_stackelberg_Q(Q, V_j, tau)))
 
+    def grad_fn(Q: np.ndarray) -> tuple[float, np.ndarray]:
+        val, grad = _compiled(jnp.array(Q))
+        return float(val), np.array(grad)
 
-def _rte_Q_bar(Q_bar, pi_bar, K_eta: int):
-    """JAX-traced truncated RTE as a function of ergodic flow Q_bar."""
-    P_bar = Q_bar / pi_bar[:, None]
-    H = jnp.zeros(())
-    Fk = P_bar
-    for k in range(1, K_eta + 1):
-        d = jnp.diag(Fk)
-        safe_d = jnp.where(d > 0, d, 1.0)  # avoid log(0) in forward and backward passes
-        H = H - jnp.sum(jnp.where(d > 0, pi_bar * d * jnp.log(safe_d), 0.0))
-        if k < K_eta:
-            Fk = P_bar @ (Fk - jnp.diag(d))
-    return H
-
-
-def _grad_rte(Q_bar: np.ndarray, pi_bar: np.ndarray, eta: float) -> tuple[float, np.ndarray]:
-    """Compute truncated RTE value and gradient w.r.t. Q_bar via JAX autodiff.
-
-    pi_bar is fixed by the optimization constraint.
-    To maximize H, negate: lambda Q: tuple(-x for x in _grad_rte(Q, pi_bar, eta))
-    """
-    if jax is None:
-        raise ImportError("JAX is required for this gradient; install with: pip install jax")
-    K_eta = int(np.ceil(1.0 / (eta * float(pi_bar.min())))) - 1
-    val, grad = jax.value_and_grad(lambda Q: _rte_Q_bar(Q, jnp.array(pi_bar), K_eta))(jnp.array(Q_bar))
-    return float(val), np.array(grad)
+    return grad_fn
 
 
 def _lifted_rte_Q(Q, V, pi_bar, K_eta: int):
@@ -167,17 +150,24 @@ def _lifted_rte_Q(Q, V, pi_bar, K_eta: int):
     return H
 
 
-def _grad_lifted_rte(Q: np.ndarray, V: np.ndarray, pi_bar: np.ndarray, eta: float) -> tuple[float, np.ndarray]:
-    """Compute truncated lifted RTE value and gradient w.r.t. Q via JAX autodiff.
+def make_grad_lifted_rte(V: np.ndarray, pi_bar: np.ndarray, eta: float):
+    """Return a JIT-compiled gradient function for the truncated lifted RTE w.r.t. Q.
 
-    pi_bar is fixed by the optimization constraint.
-    To maximize H^lift, negate: lambda Q: tuple(-x for x in _grad_lifted_rte(Q, V, pi_bar, eta))
+    Call once before the optimization loop; the returned callable reuses the compiled
+    kernel on every iteration without retracing.
+    V and pi_bar are held fixed (baked into the compiled kernel).
+    To maximize H^lift, negate the returned function's outputs.
     """
-    if jax is None:
-        raise ImportError("JAX is required for this gradient; install with: pip install jax")
     K_eta = int(np.ceil(1.0 / (eta * float(pi_bar.min())))) - 1
-    val, grad = jax.value_and_grad(lambda Q: _lifted_rte_Q(Q, V, pi_bar, K_eta))(jnp.array(Q))
-    return float(val), np.array(grad)
+    V_j = jnp.array(V)
+    pi_bar_j = jnp.array(pi_bar)
+    _compiled = jax.jit(jax.value_and_grad(lambda Q: _lifted_rte_Q(Q, V_j, pi_bar_j, K_eta)))
+
+    def grad_fn(Q: np.ndarray) -> tuple[float, np.ndarray]:
+        val, grad = _compiled(jnp.array(Q))
+        return float(val), np.array(grad)
+
+    return grad_fn
 
 
 def projected_gradient_descent(
@@ -216,9 +206,20 @@ def projected_gradient_descent(
     Q = Q0.copy()
     history: list[float] = []
     for _ in range(n_iter):
-        val, grad = grad_fn(Q)
+        try:
+            val, grad = grad_fn(Q)
+        except np.linalg.LinAlgError:
+            break
         history.append(val)
         if len(history) > 1 and abs(history[-1] - history[-2]) < tol:
             break
-        Q = project_fn(Q - alpha * grad)
+        try:
+            # Clip Q_tilde entries to [-1, 2] so OSQP sees a well-scaled problem.
+            # Q is always in [0, 1] after projection; allowing ±1 slack gives the
+            # projection full freedom to move in any direction while preventing the
+            # quadratic-objective coefficients from overflowing OSQP's internal setup.
+            Q_tilde = np.clip(Q - alpha * grad, -1.0, 2.0)
+            Q = project_fn(Q_tilde)
+        except Exception:
+            break
     return Q, history
