@@ -38,9 +38,9 @@ def fig2() -> None:
 
     fig, ax = plt.subplots()
     ax.plot(pvec, kvec)
-    ax.axhline(25/6, linestyle='--', label=r'$\mathcal{M}(\bar{P}) = 25/6$')
+    ax.axhline(25/6, linestyle='--', label=r'$K(\bar{P}) = 25/6$')
     ax.set_xlabel(r'$p$')
-    ax.set_ylabel(r'$\mathcal{M}(P)$')
+    ax.set_ylabel(r'$K(P)$')
     ax.legend()
     plt.tight_layout()
     plt.savefig('kemeny_vs_p.pdf')
@@ -100,8 +100,8 @@ def fig3() -> None:
     # plot the estimation errors
     fig, ax = plt.subplots()
     ax.plot(T, estimation_errors)
-    ax.set_xlabel(r'$t$')
-    ax.set_ylabel(r'$\|P_{\text{bar}} - P_{\text{est}}\|_F$')
+    ax.set_xlabel(r'Trajectory Length $T$')
+    ax.set_ylabel(r'$\|\hat{\bar{P}} - \bar{P}\|_F$')
     plt.tight_layout()
     plt.savefig('estimation_errors.pdf')
 
@@ -172,9 +172,9 @@ def fig4() -> None:
     fig, ax = plt.subplots()
     ax.plot(trials, mean_bar,  label=r'Empirical Mean Capture Time $\bar{P}$')
     ax.plot(trials, mean_lift, label=r'Empirical Mean Capture Time $P$', color='orange')
-    ax.axhline(kemeny(Pbar),        linestyle='--', label=r'$\mathcal{M}(\bar{P})$')
-    ax.axhline(lifted_kemeny(P, V), linestyle='--', label=r'$\mathcal{M}^{\mathrm{lift}}(P)$', color='orange')
-    ax.axhline(kemeny(P),           linestyle='--', label=r'$\mathcal{M}(P)$', color='green')
+    ax.axhline(kemeny(Pbar),        linestyle='--', label=r'$K(\bar{P})$')
+    ax.axhline(lifted_kemeny(P, V), linestyle='--', label=r'$K^{\mathrm{lift}}(P)$', color='orange')
+    ax.axhline(kemeny(P),           linestyle='--', label=r'$K(P)$', color='green')
     ax.set_xlabel('Number of Trials')
     ax.set_ylabel('Mean Capture Time')
     ax.legend()
@@ -221,10 +221,16 @@ def fig_erdos_renyi_kemeny_improvement(
         p_values = np.linspace(0.3, 0.8, 6)
 
     all_diffs: list[list[float]] = []
+    all_graphs: list[list[np.ndarray]] = []
+    all_Q_bar: list[list[np.ndarray]] = []
+    all_Q_lift: list[list[np.ndarray]] = []
 
     for p_idx, p in enumerate(p_values):
         rng = np.random.default_rng(seed * 1000 + p_idx)
         diffs_p: list[float] = []
+        graphs_p: list[np.ndarray] = []
+        Q_bar_p: list[np.ndarray] = []
+        Q_lift_p: list[np.ndarray] = []
         attempts = 0
         max_attempts = n_graphs * 8
         while len(diffs_p) < n_graphs and attempts < max_attempts:
@@ -317,6 +323,9 @@ def fig_erdos_renyi_kemeny_improvement(
                         diffs_p.append(diff)
                     else:
                         diffs_p.append(0.0)
+                    graphs_p.append(A)
+                    Q_bar_p.append(best_Q_bar)
+                    Q_lift_p.append(best_Q_lift)
 
             except Exception as e:
                 print(f"  p={p:.2f}: trial error: {e}", flush=True)
@@ -328,10 +337,15 @@ def fig_erdos_renyi_kemeny_improvement(
             flush=True,
         )
         all_diffs.append(diffs_p)
+        all_graphs.append(graphs_p)
+        all_Q_bar.append(Q_bar_p)
+        all_Q_lift.append(Q_lift_p)
 
     # Save raw data so the plot can be re-rendered without re-running optimization
     np.save('erdos_renyi_diffs.npy',
-            {'p_values': np.array(p_values), 'diffs': all_diffs}, allow_pickle=True)
+            {'p_values': np.array(p_values), 'diffs': all_diffs,
+             'graphs': all_graphs, 'Q_bar': all_Q_bar, 'Q_lift': all_Q_lift},
+            allow_pickle=True)
 
     # ------------------------------------------------------------------
     # Ridgeline plot via joypy
@@ -369,7 +383,7 @@ def fig_erdos_renyi_kemeny_improvement(
         overlap=0.4,
     )
     axes[-1].set_xlabel(
-        r'$\mathcal{M}(\bar{P}^*) - \mathcal{M}^{\mathrm{lift}}(P^*)$',
+        r'$K(\bar{P}^*) - K^{\mathrm{lift}}(P^*)$',
         fontsize=11,
     )
     axes[0].set_title(
@@ -405,16 +419,22 @@ def fig_erdos_renyi_rte_improvement(
       2. Applies degree lifting and maximises the lifted truncated RTE via PGD (n_init starts).
       3. Records H^lift(P*) - H(P_bar*).
     Results are visualised as a joypy ridgeline plot across trials.
-    eta controls the RTE truncation accuracy (Eq. 42, 44); discarded probability is bounded by eta.
+    eta controls the RTE truncation accuracy (Eq. 43, 45); discarded probability is bounded by eta.
     """
     if p_values is None:
         p_values = np.linspace(0.3, 0.8, 6)
 
     all_diffs: list[list[float]] = []
+    all_graphs: list[list[np.ndarray]] = []
+    all_Q_bar: list[list[np.ndarray]] = []
+    all_Q_lift: list[list[np.ndarray]] = []
 
     for p_idx, p in enumerate(p_values):
         rng = np.random.default_rng(seed * 1000 + p_idx)
         diffs_p: list[float] = []
+        graphs_p: list[np.ndarray] = []
+        Q_bar_p: list[np.ndarray] = []
+        Q_lift_p: list[np.ndarray] = []
         attempts = 0
         max_attempts = n_graphs * 8
         while len(diffs_p) < n_graphs and attempts < max_attempts:
@@ -503,6 +523,9 @@ def fig_erdos_renyi_rte_improvement(
                         diffs_p.append(diff)
                     else:
                         diffs_p.append(0.0)
+                    graphs_p.append(A)
+                    Q_bar_p.append(best_Q_bar)
+                    Q_lift_p.append(best_Q_lift)
 
             except Exception as e:
                 print(f"  p={p:.2f}: trial error: {e}", flush=True)
@@ -514,9 +537,14 @@ def fig_erdos_renyi_rte_improvement(
             flush=True,
         )
         all_diffs.append(diffs_p)
+        all_graphs.append(graphs_p)
+        all_Q_bar.append(Q_bar_p)
+        all_Q_lift.append(Q_lift_p)
 
     np.save('erdos_renyi_rte_diffs.npy',
-            {'p_values': np.array(p_values), 'diffs': all_diffs}, allow_pickle=True)
+            {'p_values': np.array(p_values), 'diffs': all_diffs,
+             'graphs': all_graphs, 'Q_bar': all_Q_bar, 'Q_lift': all_Q_lift},
+            allow_pickle=True)
 
     # ------------------------------------------------------------------
     # Ridgeline plot via joypy
@@ -547,7 +575,7 @@ def fig_erdos_renyi_rte_improvement(
         overlap=0.4,
     )
     axes[-1].set_xlabel(
-        r'$\mathcal{H}^{\mathrm{lift}}(P^*) - \mathcal{H}(\bar{P}^*)$',
+        r'$H^{\mathrm{lift}}(P^*) - H(\bar{P}^*)$',
         fontsize=11,
     )
     axes[0].set_title(
@@ -589,10 +617,16 @@ def fig_erdos_renyi_stackelberg_improvement(
         p_values = np.linspace(0.3, 0.8, 6)
 
     all_diffs: list[list[float]] = []
+    all_graphs: list[list[np.ndarray]] = []
+    all_Q_bar: list[list[np.ndarray]] = []
+    all_Q_lift: list[list[np.ndarray]] = []
 
     for p_idx, p in enumerate(p_values):
         rng = np.random.default_rng(seed * 1000 + p_idx)
         diffs_p: list[float] = []
+        graphs_p: list[np.ndarray] = []
+        Q_bar_p: list[np.ndarray] = []
+        Q_lift_p: list[np.ndarray] = []
         attempts = 0
         max_attempts = n_graphs * 8
         while len(diffs_p) < n_graphs and attempts < max_attempts:
@@ -686,6 +720,9 @@ def fig_erdos_renyi_stackelberg_improvement(
                         diffs_p.append(diff)
                     else:
                         diffs_p.append(0.0)
+                    graphs_p.append(A)
+                    Q_bar_p.append(best_Q_bar)
+                    Q_lift_p.append(best_Q_lift)
 
             except Exception as e:
                 print(f"  p={p:.2f}: trial error: {e}", flush=True)
@@ -697,9 +734,14 @@ def fig_erdos_renyi_stackelberg_improvement(
             flush=True,
         )
         all_diffs.append(diffs_p)
+        all_graphs.append(graphs_p)
+        all_Q_bar.append(Q_bar_p)
+        all_Q_lift.append(Q_lift_p)
 
     np.save('erdos_renyi_stackelberg_diffs.npy',
-            {'p_values': np.array(p_values), 'diffs': all_diffs}, allow_pickle=True)
+            {'p_values': np.array(p_values), 'diffs': all_diffs,
+             'graphs': all_graphs, 'Q_bar': all_Q_bar, 'Q_lift': all_Q_lift},
+            allow_pickle=True)
 
     # ------------------------------------------------------------------
     # Ridgeline plot via joypy
@@ -730,7 +772,7 @@ def fig_erdos_renyi_stackelberg_improvement(
         overlap=0.4,
     )
     axes[-1].set_xlabel(
-        r'$\mathcal{J}^{\mathrm{lift}}(P^*) - \mathcal{J}(\bar{P}^*)$',
+        r'$J^{\mathrm{lift}}(P^*) - J(\bar{P}^*)$',
         fontsize=11,
     )
     axes[0].set_title(

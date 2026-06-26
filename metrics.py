@@ -22,33 +22,42 @@ def conductance(P: np.ndarray) -> float:
     return float(phi)
 
 
-def kemeny(Pbar: np.ndarray) -> float:
-    """Compute the Kemeny constant."""
+def kemeny(Pbar: np.ndarray, W: np.ndarray | None = None) -> float:
+    """Compute the Kemeny constant.
+
+    W is the edge weight matrix; if None, all weights default to 1.
+    """
     _check_stochastic(Pbar)
     n = Pbar.shape[0]
+    if W is None:
+        W = np.ones((n, n))
     pi = stationary_distribution(Pbar)
+    rhs = (Pbar * W) @ np.ones(n)
     M = np.zeros((n, n))
     for j in range(n):
         gamma_j = np.ones(n)
         gamma_j[j] = 0
-        M[:, j] = np.linalg.solve(np.eye(n) - Pbar @ np.diag(gamma_j), np.ones(n))
+        M[:, j] = np.linalg.solve(np.eye(n) - Pbar @ np.diag(gamma_j), rhs)
     return float(pi @ M @ pi)
 
 
-def lifted_kemeny(P: np.ndarray, V: np.ndarray) -> float:
+def lifted_kemeny(P: np.ndarray, V: np.ndarray, W: np.ndarray | None = None) -> float:
     """Compute the lifted Kemeny constant.
 
     V is the n x m mapping matrix whose j-th column indicates which virtual states
-    belong to physical node j.
+    belong to physical node j. W is the edge weight matrix; if None, all weights default to 1.
     """
     _check_stochastic(P)
     _check_mapping(V, n=P.shape[0])
     n, m = V.shape
+    if W is None:
+        W = np.ones((n, n))
     pi = stationary_distribution(P)
+    rhs = (P * W) @ np.ones(n)
     M_lift = np.zeros((n, m))
     for j in range(m):
         D_j = np.diag(V[:, j])
-        M_lift[:, j] = np.linalg.solve(np.eye(n) - P + P @ D_j, np.ones(n))
+        M_lift[:, j] = np.linalg.solve(np.eye(n) - P + P @ D_j, rhs)
     return float(pi @ M_lift @ V.T @ pi)
 
 

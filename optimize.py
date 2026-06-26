@@ -7,7 +7,7 @@ from markov import _check_mapping, _check_ergodic_flow
 
 
 def project_Q(Q_tilde: np.ndarray, Q_bar: np.ndarray, V: np.ndarray, epsilon: float = 1e-6) -> np.ndarray:
-    """Project Q_tilde onto the feasible set of liftings of Q_bar (Eq. 33).
+    """Project Q_tilde onto the feasible set of liftings of Q_bar (Eq. 35).
 
     Solves: min ||Q - Q_tilde||_F  subject to  Q 1_n = Q^T 1_n,
     epsilon * V ceil(Q_bar) V^T <= Q <= V ceil(Q_bar) V^T,  V^T Q V = Q_bar.
@@ -61,42 +61,54 @@ def project_Q_bar(
     return np.maximum(Q.value, 0.0)
 
 
-def _grad_kemeny(Q_bar: np.ndarray) -> tuple[float, np.ndarray]:
-    """Compute the Kemeny constant and its gradient w.r.t. Q_bar via the adjoint method."""
+def _grad_kemeny(Q_bar: np.ndarray, W: np.ndarray | None = None) -> tuple[float, np.ndarray]:
+    """Compute the Kemeny constant and its gradient w.r.t. Q_bar via the adjoint method.
+
+    W is the edge weight matrix (Sec. VII); if None, all weights default to 1.
+    """
     m = Q_bar.shape[0]
+    if W is None:
+        W = np.ones((m, m))
     pi_bar = Q_bar.sum(axis=1)
     Pi_bar = np.diag(pi_bar)
-    M = 0.0
+    rhs = (Q_bar * W).sum(axis=1)
+    K_val = 0.0
     grad = np.zeros((m, m))
     for j in range(m):
         gamma_j = np.ones(m)
         gamma_j[j] = 0
         Gamma_j = np.diag(gamma_j)
-        m_j     = np.linalg.solve(Pi_bar - Q_bar @ Gamma_j, pi_bar)
+        m_j     = np.linalg.solve(Pi_bar - Q_bar @ Gamma_j, rhs)
         lam_j   = -pi_bar[j] * np.linalg.solve(Pi_bar - Gamma_j @ Q_bar.T, pi_bar)
-        M    += pi_bar[j] * (pi_bar @ m_j)
-        grad -= np.outer(lam_j, m_j) @ Gamma_j
-    return M, grad
+        K_val += pi_bar[j] * (pi_bar @ m_j)
+        grad -= np.outer(lam_j, m_j) @ Gamma_j + np.outer(lam_j, np.ones(m)) * W
+    return K_val, grad
 
 
-def _grad_lifted_kemeny(Q: np.ndarray, V: np.ndarray, pi_bar: np.ndarray) -> tuple[float, np.ndarray]:
-    """Compute the lifted Kemeny constant and its gradient w.r.t. Q via the adjoint method."""
+def _grad_lifted_kemeny(Q: np.ndarray, V: np.ndarray, pi_bar: np.ndarray, W: np.ndarray | None = None) -> tuple[float, np.ndarray]:
+    """Compute the lifted Kemeny constant and its gradient w.r.t. Q via the adjoint method.
+
+    W is the edge weight matrix (Sec. VII); if None, all weights default to 1.
+    """
     n, m = V.shape
+    if W is None:
+        W = np.ones((n, n))
     pi   = Q.sum(axis=1)
     Pi   = np.diag(pi)
     In   = np.eye(n)
-    M_val = 0.0
+    rhs  = (Q * W).sum(axis=1)
+    K_lift_val = 0.0
     grad  = np.zeros((n, n))
     for j in range(m):
         D_j   = np.diag(V[:, j])
         I_Dj  = In - D_j
         pib_j = float(pi_bar[j])
-        m_Ej  = np.linalg.solve(Pi - Q @ I_Dj, pi)              # forward solve, Eq. 21
-        lam_j = np.linalg.solve(Pi - I_Dj @ Q.T, -pib_j * pi)  # adjoint solve, Eq. 35
-        u_j   = (pib_j * In + np.diag(lam_j)) @ m_Ej - lam_j
-        M_val += pib_j * float(pi @ m_Ej)
-        grad  += np.outer(u_j, np.ones(n)) - np.outer(lam_j, m_Ej) @ I_Dj  # Eq. 34
-    return M_val, grad
+        m_Sj  = np.linalg.solve(Pi - Q @ I_Dj, rhs)             # forward solve, Eq. (21)
+        lam_j = np.linalg.solve(Pi - I_Dj @ Q.T, -pib_j * pi)  # adjoint solve, Eq. (37)
+        u_j   = (pib_j * In + np.diag(lam_j)) @ m_Sj
+        K_lift_val += pib_j * float(pi @ m_Sj)
+        grad  += np.outer(u_j, np.ones(n)) - np.outer(lam_j, np.ones(n)) * W - np.outer(lam_j, m_Sj) @ I_Dj  # Eq. (36)
+    return K_lift_val, grad
 
 
 def _lifted_stackelberg_Q(Q, V, tau):
