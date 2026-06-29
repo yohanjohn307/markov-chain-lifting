@@ -27,19 +27,16 @@ def erdos_renyi_graph(m: int, p: float, seed: int | None = None) -> np.ndarray:
 
 
 def random_chain(A: np.ndarray, seed: int | None = None) -> np.ndarray:
-    """Generate a random irreducible Markov chain on a graph.
+    """Generate a random ergodic flow matrix on a graph.
 
-    Each row is sampled from a Dirichlet(1) distribution over the neighbours in A.
-    Returns P: (m, m) row-stochastic matrix with P[i, j] = 0 when A[i, j] = 0.
+    Samples i.i.d. Uniform(0, 1) weights on the upper-triangle edges of A and
+    symmetrises by reflection, giving a reversible (detailed-balance) ergodic flow
+    matrix Q with Q[i, j] = 0 when A[i, j] = 0.
+    Returns Q: (m, m) non-negative symmetric matrix satisfying Q 1 = Q^T 1.
     """
     rng = np.random.default_rng(seed)
-    m = A.shape[0]
-    P = np.zeros((m, m))
-    for i in range(m):
-        nbrs = np.where(A[i] > 0)[0]
-        weights = rng.exponential(1.0, size=len(nbrs))
-        P[i, nbrs] = weights / weights.sum()
-    return P
+    U = np.triu(rng.uniform(0.0, 1.0, size=A.shape) * A)
+    return U + U.T
 
 
 def degree_lifting(A: np.ndarray) -> np.ndarray:

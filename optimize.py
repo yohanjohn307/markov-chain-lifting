@@ -15,7 +15,8 @@ def project_Q(Q_tilde: np.ndarray, Q_bar: np.ndarray, V: np.ndarray, epsilon: fl
     _check_ergodic_flow(Q_bar, m=V.shape[1])
     _check_mapping(V)
     n = V.shape[0]
-    U = V @ np.ceil(Q_bar) @ V.T
+    Q_bar_ceil = (Q_bar > epsilon).astype(int)
+    U = V @ Q_bar_ceil @ V.T
     Q = cp.Variable((n, n))
     constraints = [
         Q @ np.ones(n) == Q.T @ np.ones(n),
@@ -24,15 +25,50 @@ def project_Q(Q_tilde: np.ndarray, Q_bar: np.ndarray, V: np.ndarray, epsilon: fl
         V.T @ Q @ V == Q_bar,
     ]
     prob = cp.Problem(cp.Minimize(cp.sum_squares(Q - Q_tilde)), constraints)
-    prob.solve()
+    prob.solve(solver=cp.OSQP)
     if Q.value is None:
         raise RuntimeError("project_Q: QP did not converge; check that Q_bar is a valid ergodic flow for V")
     return np.maximum(Q.value, 0.0)
 
 
+def make_project_Q(
+    Q_bar: np.ndarray,
+    V: np.ndarray,
+    epsilon: float = 1e-6,
+):
+    """Return a cached projection function for the lifted feasible set.
+
+    Builds the CVXPY problem once with cp.Parameter; each call updates the
+    parameter and warm-starts the solver, eliminating per-call canonicalization.
+    """
+    _check_ergodic_flow(Q_bar, m=V.shape[1])
+    _check_mapping(V)
+    n = V.shape[0]
+    Q_bar_ceil = (Q_bar > epsilon).astype(int)
+    U = V @ Q_bar_ceil @ V.T
+    Q_tilde_p = cp.Parameter((n, n))
+    Q = cp.Variable((n, n))
+    constraints = [
+        Q @ np.ones(n) == Q.T @ np.ones(n),
+        Q >= epsilon * U,
+        Q <= U,
+        V.T @ Q @ V == Q_bar,
+    ]
+    prob = cp.Problem(cp.Minimize(cp.sum_squares(Q - Q_tilde_p)), constraints)
+
+    def project(Q_tilde: np.ndarray) -> np.ndarray:
+        Q_tilde_p.value = Q_tilde
+        prob.solve(solver=cp.OSQP, warm_start=True)
+        if Q.value is None:
+            raise RuntimeError("project_Q: QP did not converge; check that Q_bar is a valid ergodic flow for V")
+        return np.maximum(Q.value, 0.0)
+
+    return project
+
+
 def project_Q_bar(
     Q_tilde: np.ndarray,
-    Q_bar_ref: np.ndarray,
+    A: np.ndarray,
     pi_bar: np.ndarray | None = None,
     epsilon: float = 1e-6,
 ) -> np.ndarray:
@@ -43,10 +79,9 @@ def project_Q_bar(
         used for Kemeny and RTE)
       - pi_bar is None:  Q 1_m = Q^T 1_m  (free stationary distribution,
         used for Stackelberg where irreducibility is enforced by the metric)
-    In both cases: epsilon * A <= Q <= A, where A = ceil(Q_bar_ref).
+    In both cases: epsilon * A <= Q <= A, where A is the graph adjacency matrix.
     """
     m = Q_tilde.shape[0]
-    A = np.ceil(Q_bar_ref)
     Q = cp.Variable((m, m))
     ones = np.ones(m)
     if pi_bar is not None:
@@ -55,10 +90,42 @@ def project_Q_bar(
         stationarity = [Q @ ones == Q.T @ ones]
     constraints = stationarity + [Q >= epsilon * A, Q <= A]
     prob = cp.Problem(cp.Minimize(cp.sum_squares(Q - Q_tilde)), constraints)
-    prob.solve()
+    prob.solve(solver=cp.OSQP)
     if Q.value is None:
         raise RuntimeError("project_Q_bar: QP did not converge; check inputs are consistent")
     return np.maximum(Q.value, 0.0)
+
+
+def make_project_Q_bar(
+    A: np.ndarray,
+    pi_bar: np.ndarray | None = None,
+    epsilon: float = 1e-6,
+):
+    """Return a cached projection function for the physical feasible set.
+
+    Builds the CVXPY problem once with cp.Parameter; each call updates the
+    parameter and warm-starts the solver, eliminating per-call canonicalization.
+    adj is the graph adjacency matrix.
+    """
+    m = A.shape[0]
+    Q_tilde_p = cp.Parameter((m, m))
+    Q = cp.Variable((m, m))
+    ones = np.ones(m)
+    if pi_bar is not None:
+        stationarity = [Q @ ones == pi_bar, Q.T @ ones == pi_bar]
+    else:
+        stationarity = [Q @ ones == Q.T @ ones]
+    constraints = stationarity + [Q >= epsilon * A, Q <= A]
+    prob = cp.Problem(cp.Minimize(cp.sum_squares(Q - Q_tilde_p)), constraints)
+
+    def project(Q_tilde: np.ndarray) -> np.ndarray:
+        Q_tilde_p.value = Q_tilde
+        prob.solve(solver=cp.OSQP, warm_start=True)
+        if Q.value is None:
+            raise RuntimeError("project_Q_bar: QP did not converge; check inputs are consistent")
+        return np.maximum(Q.value, 0.0)
+
+    return project
 
 
 def _grad_kemeny(Q_bar: np.ndarray, W: np.ndarray | None = None) -> tuple[float, np.ndarray]:
@@ -206,7 +273,7 @@ def projected_gradient_descent(
       Physical Kemeny (minimize):
         pi_bar     = Q0_bar.sum(axis=1)
         grad_fn    = lambda Q: _grad_kemeny(Q)
-        project_fn = lambda Q: project_Q_bar(Q, Q0_bar, pi_bar)
+        project_fn = lambda Q: project_Q_bar(Q, adj, pi_bar)
 
       Lifted RTE (maximize — negate grad_fn):
         pi_bar     = Q_bar.sum(axis=1)

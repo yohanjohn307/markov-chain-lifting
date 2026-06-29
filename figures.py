@@ -16,6 +16,8 @@ from optimize import (
     _grad_lifted_kemeny,
     make_grad_lifted_rte,
     make_grad_lifted_stackelberg,
+    make_project_Q_bar,
+    make_project_Q,
     projected_gradient_descent,
 )
 
@@ -206,6 +208,7 @@ def fig_erdos_renyi_kemeny_improvement(
     n_iter: int = 150,
     alpha: float = 2e-3,
     tol: float = 1e-5,
+    eps: float = 1e-6,
     seed: int = 42,
 ) -> None:
     """Ridgeline plot of Kemeny improvement via degree lifting vs Erdős-Rényi edge probability p.
@@ -218,7 +221,7 @@ def fig_erdos_renyi_kemeny_improvement(
     Results are visualised as a joypy ridgeline plot across trials.
     """
     if p_values is None:
-        p_values = np.linspace(0.3, 0.8, 6)
+        p_values = np.linspace(0.3, 0.8, 4)
 
     all_diffs: list[list[float]] = []
     all_graphs: list[list[np.ndarray]] = []
@@ -231,12 +234,12 @@ def fig_erdos_renyi_kemeny_improvement(
         graphs_p: list[np.ndarray] = []
         Q_bar_p: list[np.ndarray] = []
         Q_lift_p: list[np.ndarray] = []
-        attempts = 0
-        max_attempts = n_graphs * 8
-        while len(diffs_p) < n_graphs and attempts < max_attempts:
-            attempts += 1
-            try:
-                A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
+        while len(diffs_p) < n_graphs:
+            A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
+
+            # ensure reasonable compatibility between stationary distribution and graph
+            kemeny_phys = np.inf
+            while kemeny_phys > 100:
 
                 # Sample a random stationary distribution.  Concentration parameter 5
                 # keeps entries bounded away from zero (min entry ≈ 1/(2m) with high prob),
@@ -246,94 +249,58 @@ def fig_erdos_renyi_kemeny_improvement(
                 # ------------------------------------------------------------------
                 # 1. Optimise Kemeny constant in physical space
                 # ------------------------------------------------------------------
-                best_phys_val = np.inf
-                best_Q_bar = None
+                phys_proj = make_project_Q_bar(A, pi_bar)
 
                 for _ in range(n_init):
-                    P0 = random_chain(A, seed=int(rng.integers(1 << 31)))
-                    pi0 = stationary_distribution(P0)
-                    Q0 = np.diag(pi0) @ P0
-                    try:
-                        Q0 = project_Q_bar(Q0, A, pi_bar)
-                    except RuntimeError:
-                        continue
+                    Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
+                    Q0 = phys_proj(Q0)
 
                     Q_opt, hist = projected_gradient_descent(
                         Q0,
                         _grad_kemeny,
-                        lambda Q, _A=A, _pi=pi_bar: project_Q_bar(Q, _A, _pi),
+                        phys_proj,
                         alpha, n_iter, tol,
                     )
-                    if hist and hist[-1] < best_phys_val:
-                        best_phys_val = hist[-1]
+                    if hist[-1] < kemeny_phys:
+                        kemeny_phys = hist[-1]
                         best_Q_bar = Q_opt
 
-                if best_Q_bar is None:
-                    continue
+            # ------------------------------------------------------------------
+            # 2. Build degree lifting and optimise lifted Kemeny constant
+            # ------------------------------------------------------------------
+            V = degree_lifting(A)
+            A_lift = V @ (best_Q_bar > eps).astype(int) @ V.T
 
-                pi_bar_opt = best_Q_bar.sum(axis=1)
-                P_bar_opt = best_Q_bar / pi_bar_opt[:, None]
-                kemeny_phys = kemeny(P_bar_opt)
+            kemeny_lift = np.inf
+            lift_proj = make_project_Q(best_Q_bar, V)
 
-                # ------------------------------------------------------------------
-                # 2. Build degree lifting and optimise lifted Kemeny constant
-                # ------------------------------------------------------------------
-                V = degree_lifting(A)
-                # lifted adjacency: virtual state i connected to j iff their physical nodes are
-                A_lift = (V @ np.ceil(np.maximum(best_Q_bar, 0)) @ V.T).astype(int)
-                np.fill_diagonal(A_lift, 1)  # ensure self-loops for irreducibility
+            for _ in range(n_init):
+                Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
+                Q0_lift_proj = lift_proj(Q0_lift)
 
-                best_lift_val = np.inf
-                best_Q_lift = None
+                Q_lift_opt, hist_lift = projected_gradient_descent(
+                    Q0_lift_proj,
+                    lambda Q, _V=V, _pi=pi_bar: _grad_lifted_kemeny(Q, _V, _pi),
+                    lift_proj,
+                    alpha, n_iter, tol,
+                )
+                if hist_lift[-1] < kemeny_lift:
+                    kemeny_lift = hist_lift[-1]
+                    best_Q_lift = Q_lift_opt
 
-                for _ in range(n_init):
-                    try:
-                        P0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
-                    except Exception:
-                        continue
-                    pi0_lift = stationary_distribution(P0_lift)
-                    Q0_lift = np.diag(pi0_lift) @ P0_lift
-                    try:
-                        Q0_lift_proj = project_Q(Q0_lift, best_Q_bar, V)
-                    except RuntimeError:
-                        continue
-
-                    Q_lift_opt, hist_lift = projected_gradient_descent(
-                        Q0_lift_proj,
-                        lambda Q, _V=V, _pi=pi_bar_opt: _grad_lifted_kemeny(Q, _V, _pi),
-                        lambda Q, _Qb=best_Q_bar, _V=V: project_Q(Q, _Qb, _V),
-                        alpha, n_iter, tol,
-                    )
-                    if hist_lift and hist_lift[-1] < best_lift_val:
-                        best_lift_val = hist_lift[-1]
-                        best_Q_lift = Q_lift_opt
-
-                if best_Q_lift is None:
-                    continue
-
-                pi_lift_opt = best_Q_lift.sum(axis=1)
-                P_lift_opt = best_Q_lift / pi_lift_opt[:, None]
-                kemeny_lift = lifted_kemeny(P_lift_opt, V)
-
-                diff = kemeny_phys - kemeny_lift
-                # sanity: both metrics must be positive and improvement non-negative
-                # (Theorem 5 guarantees the latter; violations indicate non-convergence)
-                if kemeny_phys > 0 and kemeny_lift > 0:
-                    if diff > 0:
-                        diffs_p.append(diff)
-                    else:
-                        diffs_p.append(0.0)
-                    graphs_p.append(A)
-                    Q_bar_p.append(best_Q_bar)
-                    Q_lift_p.append(best_Q_lift)
-
-            except Exception as e:
-                print(f"  p={p:.2f}: trial error: {e}", flush=True)
+            diff = kemeny_phys - kemeny_lift
+            if kemeny_phys > 0 and kemeny_lift > 0:
+                if diff > 0:
+                    diffs_p.append(diff)
+                else:
+                    diffs_p.append(0.0)
+                graphs_p.append(A)
+                Q_bar_p.append(best_Q_bar)
+                Q_lift_p.append(best_Q_lift)
 
         print(
             f"p={p:.2f}: {len(diffs_p)}/{n_graphs} graphs, "
-            f"{attempts} attempts"
-            + (f",  improvement = {np.mean(diffs_p):.3f} ± {np.std(diffs_p):.3f}" if diffs_p else ""),
+            + (f"improvement = {np.mean(diffs_p):.3f} ± {np.std(diffs_p):.3f}" if diffs_p else ""),
             flush=True,
         )
         all_diffs.append(diffs_p)
@@ -342,7 +309,7 @@ def fig_erdos_renyi_kemeny_improvement(
         all_Q_lift.append(Q_lift_p)
 
     # Save raw data so the plot can be re-rendered without re-running optimization
-    np.save('erdos_renyi_diffs.npy',
+    np.save('erdos_renyi_kemeny_diffs.npy',
             {'p_values': np.array(p_values), 'diffs': all_diffs,
              'graphs': all_graphs, 'Q_bar': all_Q_bar, 'Q_lift': all_Q_lift},
             allow_pickle=True)
@@ -450,19 +417,18 @@ def fig_erdos_renyi_rte_improvement(
                 best_Q_bar = None
 
                 grad_rte = make_grad_lifted_rte(np.eye(m), pi_bar, eta)
+                phys_proj = make_project_Q_bar(A, pi_bar)
                 for _ in range(n_init):
-                    P0 = random_chain(A, seed=int(rng.integers(1 << 31)))
-                    pi0 = stationary_distribution(P0)
-                    Q0 = np.diag(pi0) @ P0
+                    Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
                     try:
-                        Q0 = project_Q_bar(Q0, A, pi_bar)
+                        Q0 = phys_proj(Q0)
                     except RuntimeError:
                         continue
 
                     Q_opt, hist = projected_gradient_descent(
                         Q0,
                         lambda Q, f=grad_rte: tuple(-x for x in f(Q)),
-                        lambda Q, _A=A, _pi=pi_bar: project_Q_bar(Q, _A, _pi),
+                        phys_proj,
                         alpha, n_iter, tol,
                     )
                     if hist and hist[-1] < best_phys_val:
@@ -487,22 +453,18 @@ def fig_erdos_renyi_rte_improvement(
                 best_Q_lift = None
 
                 grad_lifted_rte = make_grad_lifted_rte(V, pi_bar_opt, eta)
+                lift_proj = make_project_Q(best_Q_bar, V)
                 for _ in range(n_init):
+                    Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
                     try:
-                        P0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
-                    except Exception:
-                        continue
-                    pi0_lift = stationary_distribution(P0_lift)
-                    Q0_lift = np.diag(pi0_lift) @ P0_lift
-                    try:
-                        Q0_lift_proj = project_Q(Q0_lift, best_Q_bar, V)
+                        Q0_lift_proj = lift_proj(Q0_lift)
                     except RuntimeError:
                         continue
 
                     Q_lift_opt, hist_lift = projected_gradient_descent(
                         Q0_lift_proj,
                         lambda Q, f=grad_lifted_rte: tuple(-x for x in f(Q)),
-                        lambda Q, _Qb=best_Q_bar, _V=V: project_Q(Q, _Qb, _V),
+                        lift_proj,
                         alpha, n_iter, tol,
                     )
                     if hist_lift and hist_lift[-1] < best_lift_val:
@@ -647,19 +609,18 @@ def fig_erdos_renyi_stackelberg_improvement(
 
                 # V=I_m collapses _lifted_stackelberg_Q to the standard Stackelberg metric
                 grad_stackelberg = make_grad_lifted_stackelberg(np.eye(m), tau)
+                phys_proj = make_project_Q_bar(A, pi_bar=None, epsilon=0.0)
                 for _ in range(n_init):
-                    P0 = random_chain(A, seed=int(rng.integers(1 << 31)))
-                    pi0 = stationary_distribution(P0)
-                    Q0 = np.diag(pi0) @ P0
+                    Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
                     try:
-                        Q0 = project_Q_bar(Q0, A, pi_bar=None, epsilon=0.0)
+                        Q0 = phys_proj(Q0)
                     except RuntimeError:
                         continue
 
                     Q_opt, hist = projected_gradient_descent(
                         Q0,
                         lambda Q, f=grad_stackelberg: tuple(-x for x in f(Q)),
-                        lambda Q, _A=A: project_Q_bar(Q, _A, pi_bar=None, epsilon=0.0),
+                        phys_proj,
                         alpha, n_iter, tol,
                     )
                     if hist and hist[-1] < best_phys_val:
@@ -684,22 +645,18 @@ def fig_erdos_renyi_stackelberg_improvement(
                 best_Q_lift = None
 
                 grad_lifted_stb = make_grad_lifted_stackelberg(V, tau)
+                lift_proj = make_project_Q(best_Q_bar, V, epsilon=0.0)
                 for _ in range(n_init):
+                    Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
                     try:
-                        P0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
-                    except Exception:
-                        continue
-                    pi0_lift = stationary_distribution(P0_lift)
-                    Q0_lift = np.diag(pi0_lift) @ P0_lift
-                    try:
-                        Q0_lift_proj = project_Q(Q0_lift, best_Q_bar, V, epsilon=0.0)
+                        Q0_lift_proj = lift_proj(Q0_lift)
                     except RuntimeError:
                         continue
 
                     Q_lift_opt, hist_lift = projected_gradient_descent(
                         Q0_lift_proj,
                         lambda Q, f=grad_lifted_stb: tuple(-x for x in f(Q)),
-                        lambda Q, _Qb=best_Q_bar, _V=V: project_Q(Q, _Qb, _V, epsilon=0.0),
+                        lift_proj,
                         alpha, n_iter, tol,
                     )
                     if hist_lift and hist_lift[-1] < best_lift_val:
@@ -798,11 +755,11 @@ if __name__ == "__main__":
     fig_erdos_renyi_kemeny_improvement(
         m=10,
         p_values=np.linspace(0.2, 0.8, 4),
-        n_graphs=20,
-        n_init=10,
-        n_iter=200,
-        alpha=1e-3,
-        tol=1e-5,
+        n_graphs=1,
+        n_init=1,
+        n_iter=100,
+        alpha=1e-5,
+        tol=1e-2,
         seed=42,
     )
     print(f"Kemeny elapsed: {time.time() - _t0:.1f}s")
