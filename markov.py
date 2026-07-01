@@ -51,6 +51,20 @@ def stationary_distribution(Pbar: np.ndarray) -> np.ndarray:
     return np.linalg.solve(A, np.ones(n))
 
 
+def transition_to_ergodic_flow(P: np.ndarray) -> np.ndarray:
+    """Compute the ergodic flow matrix Q = diag(pi) @ P for a transition matrix P."""
+    _check_stochastic(P)
+    pi = stationary_distribution(P)
+    return np.diag(pi) @ P
+
+
+def ergodic_flow_to_transition(Q: np.ndarray) -> np.ndarray:
+    """Recover the transition matrix P = diag(pi)^{-1} @ Q from an ergodic flow matrix Q."""
+    _check_ergodic_flow(Q)
+    pi = Q.sum(axis=1)
+    return np.diag(1.0 / pi) @ Q
+
+
 def collapsing(P: np.ndarray, V: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Collapse the lifted MC P to the physical space using V.
 
