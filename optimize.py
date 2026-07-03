@@ -2,6 +2,7 @@ import numpy as np
 import cvxpy as cp
 import jax
 import jax.numpy as jnp
+from jax.scipy.special import logsumexp
 
 from markov import _check_mapping, _check_ergodic_flow
 
@@ -44,7 +45,7 @@ def make_project_Q(
     _check_ergodic_flow(Q_bar, m=V.shape[1])
     _check_mapping(V)
     n = V.shape[0]
-    Q_bar_ceil = (Q_bar > epsilon).astype(int)
+    Q_bar_ceil = (Q_bar > 1e-6).astype(int)
     U = V @ Q_bar_ceil @ V.T
     Q_tilde_p = cp.Parameter((n, n))
     Q = cp.Variable((n, n))
@@ -178,8 +179,16 @@ def _grad_lifted_kemeny(Q: np.ndarray, V: np.ndarray, pi_bar: np.ndarray, W: np.
     return K_lift_val, grad
 
 
-def _lifted_stackelberg_Q(Q, V, tau):
-    """JAX-traced lifted Stackelberg metric as a function of ergodic flow Q."""
+def _lifted_stackelberg_Q(Q, V, tau, temp):
+    """JAX-traced lifted Stackelberg metric as a function of ergodic flow Q.
+
+    The true metric is min(Psi_lift), but jnp.min is flat (zero gradient) almost
+    everywhere and only subgradient-informative at the (possibly non-unique) argmin.
+    We instead use the softmin -temp * logsumexp(-Psi_lift / temp), which is smooth
+    and gives every entry a gradient weighted by its closeness to the minimum.
+    As temp -> 0, softmin(Psi_lift) -> min(Psi_lift) (it is always a lower bound,
+    with gap <= temp * log(n * m)).
+    """
     pi = Q.sum(axis=1)
     P = Q / pi[:, None]
     n, m = V.shape
@@ -192,22 +201,31 @@ def _lifted_stackelberg_Q(Q, V, tau):
         Psi_lift = Psi_lift + Fk_lift * col_mask
         if k < tau_max:
             Fk_lift = P @ (Fk_lift * V_comp)
-    return jnp.min(Psi_lift)
+    return -temp * logsumexp(-Psi_lift.reshape(-1) / temp)
 
 
 def make_grad_lifted_stackelberg(V: np.ndarray, tau: np.ndarray):
-    """Return a JIT-compiled gradient function for the lifted Stackelberg metric w.r.t. Q.
+    """Return a JIT-compiled gradient function for the (softmin) lifted Stackelberg metric w.r.t. Q.
 
+    The returned grad_fn(Q, temp) takes temp as a traced argument rather than a
+    Python constant baked in at trace time, so it can be annealed across PGD
+    iterations (e.g. via projected_gradient_descent's temp_schedule) without
+    triggering recompilation: smaller temp tracks the true min(Psi_lift) more
+    closely but concentrates gradients on the near-minimal entries; larger temp
+    gives smoother, more informative gradients early in optimization at the cost
+    of a looser approximation to the true metric.
     Call once before the optimization loop; the returned callable reuses the compiled
     kernel on every iteration without retracing.
     To maximize J^lift, negate the returned function's outputs.
     """
     tau = np.asarray(tau, dtype=int)
     V_j = jnp.array(V)
-    _compiled = jax.jit(jax.value_and_grad(lambda Q: _lifted_stackelberg_Q(Q, V_j, tau)))
+    _compiled = jax.jit(
+        jax.value_and_grad(lambda Q, temp: _lifted_stackelberg_Q(Q, V_j, tau, temp), argnums=0)
+    )
 
-    def grad_fn(Q: np.ndarray) -> tuple[float, np.ndarray]:
-        val, grad = _compiled(jnp.array(Q))
+    def grad_fn(Q: np.ndarray, temp: float) -> tuple[float, np.ndarray]:
+        val, grad = _compiled(jnp.array(Q), jnp.asarray(temp, dtype=jnp.array(Q).dtype))
         return float(val), np.array(grad)
 
     return grad_fn
@@ -256,6 +274,7 @@ def projected_gradient_descent(
     alpha: float = 1e-2,
     n_iter: int = 100,
     tol: float = 1e-6,
+    temp_schedule=None,
 ) -> tuple[np.ndarray, list[float]]:
     """Minimize an objective via projected gradient descent.
 
@@ -280,25 +299,32 @@ def projected_gradient_descent(
         grad_fn    = lambda Q: tuple(-x for x in _grad_lifted_rte(Q, V, pi_bar, eta))
         project_fn = lambda Q: project_Q(Q, Q_bar, V)
 
+    temp_schedule is optional and only applies to grad_fn's built from
+    make_grad_lifted_stackelberg, whose grad_fn(Q, temp) takes the softmin
+    temperature as a second, traced (non-retracing) argument. When temp_schedule
+    is given, grad_fn is called as grad_fn(Q, temp_schedule(k)) at iteration k
+    instead of grad_fn(Q), letting temp anneal (e.g. exponential decay) across
+    the PGD loop while reusing the single compiled JIT kernel throughout. Example
+    (maximize J^lift, so negate; temp still passed positionally through the
+    lambda):
+
+      grad_stackelberg = make_grad_lifted_stackelberg(V, tau)
+      grad_fn = lambda Q, temp: tuple(-x for x in grad_stackelberg(Q, temp))
+      Q_opt, hist = projected_gradient_descent(
+          Q0, grad_fn, project_fn, alpha, n_iter, tol,
+          temp_schedule=lambda k: temp0 * decay ** k,
+      )
+
     Returns (final Q, history of objective values).
     """
     Q = Q0.copy()
     history: list[float] = []
-    for _ in range(n_iter):
-        try:
-            val, grad = grad_fn(Q)
-        except np.linalg.LinAlgError:
-            break
+    for k in range(n_iter):
+        val, grad = grad_fn(Q, temp_schedule(k)) if temp_schedule is not None else grad_fn(Q)
         history.append(val)
         if len(history) > 1 and abs(history[-1] - history[-2]) < tol:
             break
-        try:
-            # Clip Q_tilde entries to [-1, 2] so OSQP sees a well-scaled problem.
-            # Q is always in [0, 1] after projection; allowing ±1 slack gives the
-            # projection full freedom to move in any direction while preventing the
-            # quadratic-objective coefficients from overflowing OSQP's internal setup.
-            Q_tilde = np.clip(Q - alpha * grad, -1.0, 2.0)
-            Q = project_fn(Q_tilde)
-        except Exception:
-            break
+        Q_tilde = Q - alpha * grad
+        Q = project_fn(Q_tilde)
+
     return Q, history

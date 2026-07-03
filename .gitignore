@@ -5,3 +5,4 @@ __pycache__/
 *.npy
 *.pdf
 *.png
+debug.ipynb

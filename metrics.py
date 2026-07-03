@@ -3,25 +3,6 @@ import numpy as np
 from markov import _check_stochastic, _check_mapping, stationary_distribution
 
 
-def conductance(P: np.ndarray) -> float:
-    """Compute the conductance.
-
-    Enumerates all 2^n - 2 subsets, so only practical for small state spaces.
-    """
-    _check_stochastic(P)
-    n = P.shape[0]
-    pi = stationary_distribution(P)
-    Q = np.diag(pi) @ P
-    phi = np.inf
-    for mask in range(1, 2**n - 1):
-        A  = [i for i in range(n) if     mask & (1 << i)]
-        Ac = [i for i in range(n) if not mask & (1 << i)]
-        flow = Q[np.ix_(A, Ac)].sum()
-        pi_A = pi[A].sum()
-        phi  = min(phi, flow / (pi_A * (1.0 - pi_A)))
-    return float(phi)
-
-
 def kemeny(Pbar: np.ndarray, W: np.ndarray | None = None) -> float:
     """Compute the Kemeny constant.
 

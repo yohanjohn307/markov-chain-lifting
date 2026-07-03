@@ -76,3 +76,24 @@ def collapsing(P: np.ndarray, V: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     Pi = np.diag(pi)
     Pbar = np.linalg.solve(V.T @ Pi @ V, V.T @ Pi @ P @ V)
     return Pbar, V.T @ pi
+
+
+def conductance(Pbar: np.ndarray) -> tuple[float, float]:
+    """Compute the conductance and its associated Kemeny constant lower bound.
+
+    Enumerates all 2^n - 2 subsets, so only practical for small state spaces.
+
+    Returns (phi, lower_bound) where lower_bound = 1 / (2 * phi).
+    """
+    _check_stochastic(Pbar)
+    n = Pbar.shape[0]
+    pi = stationary_distribution(Pbar)
+    Qbar = np.diag(pi) @ Pbar
+    phi = np.inf
+    for mask in range(1, 2**n - 1):
+        A  = [i for i in range(n) if     mask & (1 << i)]
+        Ac = [i for i in range(n) if not mask & (1 << i)]
+        flow = Qbar[np.ix_(A, Ac)].sum()
+        pi_A = pi[A].sum()
+        phi  = min(phi, flow / (pi_A * (1.0 - pi_A)))
+    return float(phi), float(1.0 / (2.0 * phi))

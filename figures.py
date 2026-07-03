@@ -1,4 +1,5 @@
 
+from math import tau
 import time as time
 import numpy as np
 import matplotlib.pyplot as plt
@@ -6,9 +7,9 @@ import networkx as nx
 import pandas as pd
 import joypy
 
-from markov import stationary_distribution, collapsing
+from markov import stationary_distribution, collapsing, ergodic_flow_to_transition, conductance
 from metrics import kemeny, lifted_kemeny, stackelberg, lifted_stackelberg, return_time_entropy, lifted_return_time_entropy
-from graph import erdos_renyi_graph, random_chain, degree_lifting
+from graph import erdos_renyi_graph, random_chain, degree_lifting, san_francisco_graph, prune_long_edges
 from optimize import (
     project_Q,
     project_Q_bar,
@@ -229,6 +230,8 @@ def fig_erdos_renyi_kemeny_improvement(
     all_Q_lift: list[list[np.ndarray]] = []
     all_times_phys: list[list[float]] = []
     all_times_lift: list[list[float]] = []
+    all_V: list[list[np.ndarray]] = []
+    all_conductance_lb: list[list[float]] = []
 
     for p_idx, p in enumerate(p_values):
         rng = np.random.default_rng(seed * 1000 + p_idx)
@@ -238,6 +241,8 @@ def fig_erdos_renyi_kemeny_improvement(
         Q_lift_p: list[np.ndarray] = []
         times_phys_p: list[float] = []
         times_lift_p: list[float] = []
+        V_p: list[np.ndarray] = []
+        conductance_lb_p: list[float] = []
         while len(diffs_p) < n_graphs:
             A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
 
@@ -272,6 +277,10 @@ def fig_erdos_renyi_kemeny_improvement(
                         best_Q_bar = Q_opt
                 _t1_phys = time.perf_counter()
 
+            # Conductance lower bound on the Kemeny constant of the optimised
+            # physical MC (Corollary 9): K(P_bar) >= 1 / (2 * Phi(P_bar)).
+            _, conductance_lb = conductance(ergodic_flow_to_transition(best_Q_bar))
+
             # ------------------------------------------------------------------
             # 2. Build degree lifting and optimise lifted Kemeny constant
             # ------------------------------------------------------------------
@@ -292,22 +301,21 @@ def fig_erdos_renyi_kemeny_improvement(
                     lift_proj,
                     alpha, n_iter, tol,
                 )
-                if hist and hist_lift[-1] < kemeny_lift:
+                if hist_lift and hist_lift[-1] < kemeny_lift:
                     kemeny_lift = hist_lift[-1]
                     best_Q_lift = Q_lift_opt
             _t1_lift = time.perf_counter()
 
             diff = kemeny_phys - kemeny_lift
             if kemeny_phys > 0 and kemeny_lift > 0:
-                if diff > 0:
-                    diffs_p.append(diff)
-                else:
-                    diffs_p.append(0.0)
+                diffs_p.append(max(diff, 0.0))
                 graphs_p.append(A)
                 Q_bar_p.append(best_Q_bar)
                 Q_lift_p.append(best_Q_lift)
                 times_phys_p.append(_t1_phys - _t0_phys)
                 times_lift_p.append(_t1_lift - _t0_lift)
+                V_p.append(V)
+                conductance_lb_p.append(conductance_lb)
 
         print(
             f"p={p:.2f}: {len(diffs_p)}/{n_graphs} graphs, "
@@ -320,249 +328,129 @@ def fig_erdos_renyi_kemeny_improvement(
         all_Q_lift.append(Q_lift_p)
         all_times_phys.append(times_phys_p)
         all_times_lift.append(times_lift_p)
+        all_V.append(V_p)
+        all_conductance_lb.append(conductance_lb_p)
 
     # Save raw data so the plot can be re-rendered without re-running optimization
     np.save('erdos_renyi_kemeny_diffs.npy',
-            {'p_values': np.array(p_values), 'diffs': all_diffs,
+            {'p_values': np.array(p_values), 'diffs': all_diffs, 'V': all_V,
              'graphs': all_graphs, 'Q_bar': all_Q_bar, 'Q_lift': all_Q_lift,
-             'times_phys': all_times_phys, 'times_lift': all_times_lift},
+             'times_phys': all_times_phys, 'times_lift': all_times_lift,
+             'conductance_lb': all_conductance_lb},
             allow_pickle=True)  # type: ignore[arg-type]
 
-    # ------------------------------------------------------------------
-    # Ridgeline plot via joypy
-    # ------------------------------------------------------------------
-    valid_idx = [i for i, d in enumerate(all_diffs) if len(d) >= 2]
-    valid_p   = [p_values[i] for i in valid_idx]
-    valid_d   = [all_diffs[i] for i in valid_idx]
 
-    # Clip to the 1st–99th percentile of all values to prevent sparse-graph
-    # outliers from collapsing the dense-graph distributions to a sliver.
-    all_vals = [v for d in valid_d for v in d]
-    x_min    = max(0.0, float(np.percentile(all_vals, 1)))
-    x_max    = float(np.percentile(all_vals, 99)) * 1.05
-
-    # joypy expects a wide-format DataFrame: one column per ridge, rows are samples.
-    # Columns are ordered so the lowest p appears at the top of the figure
-    # (joypy draws the first column at the top).
-    df = pd.DataFrame(
-        {f'$p={p:.2f}$': pd.Series(
-            [v for v in d if x_min <= v <= x_max]   # clip outliers per-group
-        ) for p, d in zip(valid_p, valid_d)}
-    )
-    n_ridges = len(valid_p)
-
-    _, axes = joypy.joyplot(
-        df,
-        figsize=(7, 1.0 + 0.7 * n_ridges),
-        colormap=plt.cm.viridis_r,  # type: ignore[attr-defined]
-        linecolor='white',
-        linewidth=0.8,
-        alpha=0.8,
-        x_range=[x_min, x_max],
-        overlap=0.4,  # type: ignore[arg-type]
-    )
-    axes[-1].set_xlabel(
-        r'$K(\bar{P}^*) - K^{\mathrm{lift}}(P^*)$',
-        fontsize=11,
-    )
-    axes[0].set_title(
-        rf'Kemeny constant improvement via degree lifting, $G({m},\,p)$',
-        fontsize=11, pad=8,
-    )
-    # Mark zero on every sub-axis
-    for ax in axes:
-        ax.axvline(0, color='gray', lw=0.8, ls=':', zorder=0)
-
-    plt.tight_layout()
-    plt.savefig('erdos_renyi_kemeny_improvement.pdf', bbox_inches='tight')
-    plt.savefig('erdos_renyi_kemeny_improvement.png', dpi=150, bbox_inches='tight')
-    print("Saved: erdos_renyi_kemeny_improvement.pdf / .png")
-
-
-def fig_erdos_renyi_rte_improvement(
-    m: int = 6,
-    p_values=None,
-    n_graphs: int = 20,
+def fig_san_francisco_kemeny_improvement(
+    w_max: int = 6,
+    n_trials: int = 10,
     n_init: int = 3,
     n_iter: int = 150,
     alpha: float = 2e-3,
-    eta: float = 0.05,
     tol: float = 1e-5,
+    eps: float = 1e-6,
     seed: int = 42,
 ) -> None:
-    """Ridgeline plot of return-time entropy improvement via degree lifting vs Erdős-Rényi edge probability p.
+    """Kemeny improvement via degree lifting on the San Francisco graph (Sec. VII).
 
-    For each p, generates n_graphs random connected G(m, p) graphs, each with a random
-    target stationary distribution.  For every graph:
-      1. Maximises the truncated RTE in the physical space via PGD (n_init starts).
-      2. Applies degree lifting and maximises the lifted truncated RTE via PGD (n_init starts).
-      3. Records H^lift(P*) - H(P_bar*).
-    Results are visualised as a joypy ridgeline plot across trials.
-    eta controls the RTE truncation accuracy (Eq. 43, 45); discarded probability is bounded by eta.
+    Unlike fig_erdos_renyi_kemeny_improvement, the graph, travel-time weights W,
+    and target stationary distribution pi_bar are all fixed real-world data from
+    graph.san_francisco_graph() (12-node police district graph, complete digraph,
+    pi_bar proportional to crime rate) rather than randomly generated. Since the
+    graph is fixed, we instead repeat the PGD optimization across n_trials random
+    initializations to characterize the variability of the achieved (weighted)
+    Kemeny and lifted Kemeny constants:
+      1. Optimises the weighted Kemeny constant in the physical space via PGD
+         (n_init starts), for pi_bar fixed.
+      2. Applies degree lifting and optimises the weighted lifted Kemeny constant
+         via PGD (n_init starts).
+      3. Records K(P_bar*) - K^lift(P*).
+    Note: because the SF graph is complete (11 neighbours per node), degree
+    lifting yields a 132-state lifted chain, so this can be considerably slower
+    per trial than the sparse Erdős-Rényi case; reduce n_trials/n_init/n_iter for
+    a quick look.
     """
-    if p_values is None:
-        p_values = np.linspace(0.3, 0.8, 6)
+    A, W, pi_bar = san_francisco_graph()
+    A = prune_long_edges(A, W, threshold=w_max)
+    V = degree_lifting(A)
+    print(f"San Francisco graph: {A.shape[0]} nodes, {A.sum()} edges, {V.shape[0]} lifted states", flush=True)
+    W_lift = V @ W @ V.T
 
-    all_diffs: list[list[float]] = []
-    all_graphs: list[list[np.ndarray]] = []
-    all_Q_bar: list[list[np.ndarray]] = []
-    all_Q_lift: list[list[np.ndarray]] = []
+    rng = np.random.default_rng(seed)
+    phys_proj = make_project_Q_bar(A, pi_bar)
 
-    for p_idx, p in enumerate(p_values):
-        rng = np.random.default_rng(seed * 1000 + p_idx)
-        diffs_p: list[float] = []
-        graphs_p: list[np.ndarray] = []
-        Q_bar_p: list[np.ndarray] = []
-        Q_lift_p: list[np.ndarray] = []
-        attempts = 0
-        max_attempts = n_graphs * 8
-        while len(diffs_p) < n_graphs and attempts < max_attempts:
-            attempts += 1
-            try:
-                A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
-                pi_bar = rng.dirichlet(5 * np.ones(m))
+    diffs: list[float] = []
+    Q_bar_list: list[np.ndarray] = []
+    Q_lift_list: list[np.ndarray] = []
 
-                # ------------------------------------------------------------------
-                # 1. Maximise RTE in physical space (negate grad_fn to use minimizer)
-                # ------------------------------------------------------------------
-                best_phys_val = np.inf  # tracks negated RTE; lower = better (higher H)
-                best_Q_bar = None
+    for t in range(n_trials):
+        best_Q_bar: np.ndarray | None = None
+        kemeny_phys = np.inf
+        for _ in range(n_init):
+            Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
+            Q0 = phys_proj(Q0)
 
-                grad_rte = make_grad_lifted_rte(np.eye(m), pi_bar, eta)
-                phys_proj = make_project_Q_bar(A, pi_bar)
-                for _ in range(n_init):
-                    Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
-                    try:
-                        Q0 = phys_proj(Q0)
-                    except RuntimeError:
-                        continue
+            Q_opt, hist = projected_gradient_descent(
+                Q0,
+                lambda Q, _W=W: _grad_kemeny(Q, _W),
+                phys_proj,
+                alpha, n_iter, tol,
+            )
+            if hist and hist[-1] < kemeny_phys:
+                kemeny_phys = hist[-1]
+                best_Q_bar = Q_opt
 
-                    Q_opt, hist = projected_gradient_descent(
-                        Q0,
-                        lambda Q, f=grad_rte: tuple(-x for x in f(Q)),
-                        phys_proj,
-                        alpha, n_iter, tol,
-                    )
-                    if hist and hist[-1] < best_phys_val:
-                        best_phys_val = hist[-1]
-                        best_Q_bar = Q_opt
+        A_lift = V @ (best_Q_bar > eps).astype(int) @ V.T
+        best_Q_lift: np.ndarray | None = None
+        kemeny_lift = np.inf
+        lift_proj = make_project_Q(best_Q_bar, V)
+        for _ in range(n_init):
+            Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
+            Q0_lift = lift_proj(Q0_lift)
 
-                if best_Q_bar is None:
-                    continue
+            Q_lift_opt, hist_lift = projected_gradient_descent(
+                Q0_lift,
+                lambda Q, _V=V, _pi=pi_bar, _W=W_lift: _grad_lifted_kemeny(Q, _V, _pi, _W),
+                lift_proj,
+                alpha, n_iter, tol,
+            )
+            if hist_lift and hist_lift[-1] < kemeny_lift:
+                kemeny_lift = hist_lift[-1]
+                best_Q_lift = Q_lift_opt
 
-                pi_bar_opt = best_Q_bar.sum(axis=1)
-                P_bar_opt = best_Q_bar / pi_bar_opt[:, None]
-                rte_phys = return_time_entropy(P_bar_opt, eta)
-
-                # ------------------------------------------------------------------
-                # 2. Build degree lifting and maximise lifted RTE
-                # ------------------------------------------------------------------
-                V = degree_lifting(A)
-                A_lift = (V @ np.ceil(np.maximum(best_Q_bar, 0)) @ V.T).astype(int)
-                np.fill_diagonal(A_lift, 1)
-
-                best_lift_val = np.inf  # tracks negated lifted RTE
-                best_Q_lift = None
-
-                grad_lifted_rte = make_grad_lifted_rte(V, pi_bar_opt, eta)
-                lift_proj = make_project_Q(best_Q_bar, V)
-                for _ in range(n_init):
-                    Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
-                    try:
-                        Q0_lift_proj = lift_proj(Q0_lift)
-                    except RuntimeError:
-                        continue
-
-                    Q_lift_opt, hist_lift = projected_gradient_descent(
-                        Q0_lift_proj,
-                        lambda Q, f=grad_lifted_rte: tuple(-x for x in f(Q)),
-                        lift_proj,
-                        alpha, n_iter, tol,
-                    )
-                    if hist_lift and hist_lift[-1] < best_lift_val:
-                        best_lift_val = hist_lift[-1]
-                        best_Q_lift = Q_lift_opt
-
-                if best_Q_lift is None:
-                    continue
-
-                pi_lift_opt = best_Q_lift.sum(axis=1)
-                P_lift_opt = best_Q_lift / pi_lift_opt[:, None]
-                rte_lift = lifted_return_time_entropy(P_lift_opt, V, eta)
-
-                diff = rte_lift - rte_phys
-                # Corollary 7 guarantees diff >= 0; violations indicate non-convergence
-                if rte_phys > 0 and rte_lift > 0:
-                    if diff > 0:
-                        diffs_p.append(diff)
-                    else:
-                        diffs_p.append(0.0)
-                    graphs_p.append(A)
-                    Q_bar_p.append(best_Q_bar)
-                    Q_lift_p.append(best_Q_lift)
-
-            except Exception as e:
-                print(f"  p={p:.2f}: trial error: {e}", flush=True)
+        diff = kemeny_phys - kemeny_lift
+        if kemeny_phys > 0 and kemeny_lift > 0:
+            diffs.append(max(diff, 0.0))
+            Q_bar_list.append(best_Q_bar)
+            Q_lift_list.append(best_Q_lift)
 
         print(
-            f"p={p:.2f}: {len(diffs_p)}/{n_graphs} trials, "
-            f"{attempts} attempts"
-            + (f",  improvement = {np.mean(diffs_p):.3f} ± {np.std(diffs_p):.3f}" if diffs_p else ""),
+            f"trial {t+1}/{n_trials}: K(P_bar*)={kemeny_phys:.3f}, "
+            f"K^lift(P*)={kemeny_lift:.3f}, diff={diff:.3f}",
             flush=True,
         )
-        all_diffs.append(diffs_p)
-        all_graphs.append(graphs_p)
-        all_Q_bar.append(Q_bar_p)
-        all_Q_lift.append(Q_lift_p)
 
-    np.save('erdos_renyi_rte_diffs.npy',
-            {'p_values': np.array(p_values), 'diffs': all_diffs,
-             'graphs': all_graphs, 'Q_bar': all_Q_bar, 'Q_lift': all_Q_lift},
+    print(
+        f"San Francisco graph: {len(diffs)}/{n_trials} trials, "
+        + (f"improvement = {np.mean(diffs):.3f} ± {np.std(diffs):.3f}" if diffs else ""),
+        flush=True,
+    )
+
+    # Save raw data so the plot can be re-rendered without re-running optimization
+    np.save('san_francisco_kemeny_diffs.npy',
+            {'diffs': diffs, 'V': V, 'A': A, 'W': W, 'pi_bar': pi_bar,
+             'Q_bar': Q_bar_list, 'Q_lift': Q_lift_list},
             allow_pickle=True)  # type: ignore[arg-type]
 
-    # ------------------------------------------------------------------
-    # Ridgeline plot via joypy
-    # ------------------------------------------------------------------
-    valid_idx = [i for i, d in enumerate(all_diffs) if len(d) >= 2]
-    valid_p   = [p_values[i] for i in valid_idx]
-    valid_d   = [all_diffs[i] for i in valid_idx]
-
-    all_vals = [v for d in valid_d for v in d]
-    x_min    = max(0.0, float(np.percentile(all_vals, 1)))
-    x_max    = float(np.percentile(all_vals, 99)) * 1.05
-
-    df = pd.DataFrame(
-        {f'$p={p:.2f}$': pd.Series(
-            [v for v in d if x_min <= v <= x_max]
-        ) for p, d in zip(valid_p, valid_d)}
-    )
-    n_ridges = len(valid_p)
-
-    _, axes = joypy.joyplot(
-        df,
-        figsize=(7, 1.0 + 0.7 * n_ridges),
-        colormap=plt.cm.viridis_r,  # type: ignore[attr-defined]
-        linecolor='white',
-        linewidth=0.8,
-        alpha=0.8,
-        x_range=[x_min, x_max],
-        overlap=0.4,  # type: ignore[arg-type]
-    )
-    axes[-1].set_xlabel(
-        r'$H^{\mathrm{lift}}(P^*) - H(\bar{P}^*)$',
-        fontsize=11,
-    )
-    axes[0].set_title(
-        rf'Return-time entropy improvement via degree lifting, $G({m},\,p)$',
-        fontsize=11, pad=8,
-    )
-    for ax in axes:
-        ax.axvline(0, color='gray', lw=0.8, ls=':', zorder=0)
-
+    fig, ax = plt.subplots()
+    ax.hist(diffs, bins=min(10, max(1, len(diffs))), color='steelblue', edgecolor='white')
+    ax.axvline(0, color='gray', lw=0.8, ls=':')
+    ax.set_xlabel(r'$K(\bar{P}^*) - K^{\mathrm{lift}}(P^*)$')
+    ax.set_ylabel('Count')
+    ax.set_title('Kemeny improvement via degree lifting, San Francisco graph')
     plt.tight_layout()
-    plt.savefig('erdos_renyi_rte_improvement.pdf', bbox_inches='tight')
-    plt.savefig('erdos_renyi_rte_improvement.png', dpi=150, bbox_inches='tight')
-    print("Saved: erdos_renyi_rte_improvement.pdf / .png")
+    plt.savefig('san_francisco_kemeny_improvement.pdf')
+    plt.savefig('san_francisco_kemeny_improvement.png', dpi=150)
+    print("Saved: san_francisco_kemeny_improvement.pdf / .png")
 
 
 def fig_erdos_renyi_stackelberg_improvement(
@@ -570,10 +458,12 @@ def fig_erdos_renyi_stackelberg_improvement(
     p_values=None,
     n_graphs: int = 20,
     n_init: int = 3,
-    n_iter: int = 150,
-    alpha: float = 2e-3,
-    tol: float = 1e-5,
+    n_iter: int = 250,
+    alpha: float = 0.1,
+    tol: float = 1e-6,
     eps: float = 1e-6,
+    temp0: float = 1e-1,
+    temp_min: float = 1e-6,
     seed: int = 42,
 ) -> None:
     """Ridgeline plot of Stackelberg game metric improvement via degree lifting vs Erdős-Rényi edge probability p.
@@ -586,15 +476,25 @@ def fig_erdos_renyi_stackelberg_improvement(
       3. Records J^lift(P*) - J(P_bar*).
     tau is set uniformly to the diameter of each graph (smallest duration guaranteeing
     nonzero capture probability from any node to any other).
+    The softmin temperature is annealed geometrically from temp0 to temp_min over
+    n_iter PGD iterations (temp_k = temp0 * temp_decay**k, temp_decay = (temp_min /
+    temp0)**(1/n_iter)), tightening the softmin -> min approximation as optimization
+    progresses while reusing a single compiled JIT kernel throughout (see
+    make_grad_lifted_stackelberg).
     Results are visualised as a joypy ridgeline plot across trials.
     """
     if p_values is None:
         p_values = np.linspace(0.3, 0.8, 4)
 
+    temp_decay = (temp_min / temp0) ** (1 / n_iter)
+
     all_diffs: list[list[float]] = []
     all_graphs: list[list[np.ndarray]] = []
     all_Q_bar: list[list[np.ndarray]] = []
     all_Q_lift: list[list[np.ndarray]] = []
+    all_times_phys: list[list[float]] = []
+    all_times_lift: list[list[float]] = []
+    all_V: list[list[np.ndarray]] = []
 
     for p_idx, p in enumerate(p_values):
         rng = np.random.default_rng(seed * 1000 + p_idx)
@@ -602,6 +502,9 @@ def fig_erdos_renyi_stackelberg_improvement(
         graphs_p: list[np.ndarray] = []
         Q_bar_p: list[np.ndarray] = []
         Q_lift_p: list[np.ndarray] = []
+        times_phys_p: list[float] = []
+        times_lift_p: list[float] = []
+        V_p: list[np.ndarray] = []
         while len(diffs_p) < n_graphs:
             A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
             A_no_self = A - np.diag(np.diag(A))
@@ -619,19 +522,23 @@ def fig_erdos_renyi_stackelberg_improvement(
             # V=I_m collapses _lifted_stackelberg_Q to the standard Stackelberg metric
             grad_stackelberg = make_grad_lifted_stackelberg(np.eye(m), tau)
             phys_proj = make_project_Q_bar(A, pi_bar=None, epsilon=0.0)
+            _t0_phys = time.perf_counter()
             for _ in range(n_init):
                 Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
                 Q0 = phys_proj(Q0)
 
                 Q_opt, hist = projected_gradient_descent(
                     Q0,
-                    lambda Q, f=grad_stackelberg: tuple(-x for x in f(Q)),
+                    lambda Q, temp, f=grad_stackelberg: tuple(-x for x in f(Q, temp)),
                     phys_proj,
                     alpha, n_iter, tol,
+                    temp_schedule=lambda k: temp0 * temp_decay ** k,
                 )
                 if hist and hist[-1] < capt_prob_phys:
-                    capt_prob_phys = hist[-1]
+                    P_opt = ergodic_flow_to_transition(Q_opt)
+                    capt_prob_phys = stackelberg(P_opt, tau)
                     best_Q_bar = Q_opt
+            _t1_phys = time.perf_counter()
 
             # ------------------------------------------------------------------
             # 2. Build degree lifting and maximise lifted Stackelberg metric
@@ -643,19 +550,23 @@ def fig_erdos_renyi_stackelberg_improvement(
             capt_prob_lift = np.inf  # tracks negated J^lift
             grad_lifted_stb = make_grad_lifted_stackelberg(V, tau)
             lift_proj = make_project_Q(best_Q_bar, V, epsilon=0.0)
+            _t0_lift = time.perf_counter()
             for _ in range(n_init):
                 Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
                 Q0_lift_proj = lift_proj(Q0_lift)
 
                 Q_lift_opt, hist_lift = projected_gradient_descent(
                     Q0_lift_proj,
-                    lambda Q, f=grad_lifted_stb: tuple(-x for x in f(Q)),
+                    lambda Q, temp, f=grad_lifted_stb: tuple(-x for x in f(Q, temp)),
                     lift_proj,
                     alpha, n_iter, tol,
+                    temp_schedule=lambda k: temp0 * temp_decay ** k,
                 )
                 if hist_lift and hist_lift[-1] < capt_prob_lift:
-                    capt_prob_lift = hist_lift[-1]
+                    P_lift_opt = ergodic_flow_to_transition(Q_lift_opt)
+                    capt_prob_lift = lifted_stackelberg(P_lift_opt, V, tau)
                     best_Q_lift = Q_lift_opt
+            _t1_lift = time.perf_counter()
 
             diff = capt_prob_lift - capt_prob_phys
             # Corollary 7 guarantees diff >= 0; violations indicate non-convergence
@@ -667,6 +578,9 @@ def fig_erdos_renyi_stackelberg_improvement(
                 graphs_p.append(A)
                 Q_bar_p.append(best_Q_bar)
                 Q_lift_p.append(best_Q_lift)
+                times_phys_p.append(_t1_phys - _t0_phys)
+                times_lift_p.append(_t1_lift - _t0_lift)
+                V_p.append(V)
 
         print(
             f"p={p:.2f}: {len(diffs_p)}/{n_graphs} graphs, "
@@ -677,55 +591,15 @@ def fig_erdos_renyi_stackelberg_improvement(
         all_graphs.append(graphs_p)
         all_Q_bar.append(Q_bar_p)
         all_Q_lift.append(Q_lift_p)
+        all_times_phys.append(times_phys_p)
+        all_times_lift.append(times_lift_p)
+        all_V.append(V_p)
 
     np.save('erdos_renyi_stackelberg_diffs.npy',
-            {'p_values': np.array(p_values), 'diffs': all_diffs,
+            {'p_values': np.array(p_values), 'diffs': all_diffs, 'V': all_V,
+             'times_phys': all_times_phys, 'times_lift': all_times_lift,
              'graphs': all_graphs, 'Q_bar': all_Q_bar, 'Q_lift': all_Q_lift},
             allow_pickle=True)  # type: ignore[arg-type]
-
-    # ------------------------------------------------------------------
-    # Ridgeline plot via joypy
-    # ------------------------------------------------------------------
-    valid_idx = [i for i, d in enumerate(all_diffs) if len(d) >= 2]
-    valid_p   = [p_values[i] for i in valid_idx]
-    valid_d   = [all_diffs[i] for i in valid_idx]
-
-    all_vals = [v for d in valid_d for v in d]
-    x_min    = max(0.0, float(np.percentile(all_vals, 1)))
-    x_max    = float(np.percentile(all_vals, 99)) * 1.05
-
-    df = pd.DataFrame(
-        {f'$p={p:.2f}$': pd.Series(
-            [v for v in d if x_min <= v <= x_max]
-        ) for p, d in zip(valid_p, valid_d)}
-    )
-    n_ridges = len(valid_p)
-
-    _, axes = joypy.joyplot(
-        df,
-        figsize=(7, 1.0 + 0.7 * n_ridges),
-        colormap=plt.cm.viridis_r,  # type: ignore[attr-defined]
-        linecolor='white',
-        linewidth=0.8,
-        alpha=0.8,
-        x_range=[x_min, x_max],
-        overlap=0.4,  # type: ignore[arg-type]
-    )
-    axes[-1].set_xlabel(
-        r'$J^{\mathrm{lift}}(P^*) - J(\bar{P}^*)$',
-        fontsize=11,
-    )
-    axes[0].set_title(
-        rf'Stackelberg metric improvement via degree lifting, $G({m},\,p)$',
-        fontsize=11, pad=8,
-    )
-    for ax in axes:
-        ax.axvline(0, color='gray', lw=0.8, ls=':', zorder=0)
-
-    plt.tight_layout()
-    plt.savefig('erdos_renyi_stackelberg_improvement.pdf', bbox_inches='tight')
-    plt.savefig('erdos_renyi_stackelberg_improvement.png', dpi=150, bbox_inches='tight')
-    print("Saved: erdos_renyi_stackelberg_improvement.pdf / .png")
 
 
 if __name__ == "__main__":
@@ -734,19 +608,44 @@ if __name__ == "__main__":
     # fig3()
     # fig4()
 
-    # This took 17 hrs!
+    # # This took 17 hrs!
+    # _t0 = time.time()
+    # fig_erdos_renyi_kemeny_improvement(
+    #     m=10,
+    #     p_values=np.linspace(0.2, 0.8, 7),
+    #     n_graphs=20,
+    #     n_init=5,
+    #     n_iter=100,
+    #     alpha=1e-5,
+    #     tol=1e-2,
+    #     seed=42,
+    # )
+    # print(f"E-R Kemeny elapsed: {time.time() - _t0:.1f}s")
+
     _t0 = time.time()
-    fig_erdos_renyi_kemeny_improvement(
-        m=10,
-        p_values=np.linspace(0.2, 0.8, 7),
-        n_graphs=20,
-        n_init=5,
-        n_iter=100,
+    fig_san_francisco_kemeny_improvement(
+        w_max=4,
+        n_trials=5,
+        n_init=1,
+        n_iter=250,
         alpha=1e-5,
         tol=1e-2,
         seed=42,
     )
-    print(f"Kemeny elapsed: {time.time() - _t0:.1f}s")
+    print(f"SF Kemeny elapsed: {time.time() - _t0:.1f}s")
+
+    # _t0 = time.time()
+    # fig_erdos_renyi_stackelberg_improvement(
+    #     m=10,
+    #     p_values=np.linspace(0.2, 0.8, 4),
+    #     n_graphs=5,
+    #     n_init=1,
+    #     n_iter=250,
+    #     alpha=0.1,
+    #     tol=1e-6,
+    #     seed=42,
+    # )
+    # print(f"Stackelberg elapsed: {time.time() - _t0:.1f}s")
 
     # _t0 = time.time()
     # fig_erdos_renyi_rte_improvement(
@@ -762,15 +661,4 @@ if __name__ == "__main__":
     # )
     # print(f"RTE elapsed: {time.time() - _t0:.1f}s")
 
-    # _t0 = time.time()
-    # fig_erdos_renyi_stackelberg_improvement(
-    #     m=6,
-    #     p_values=np.linspace(0.3, 0.8, 3),
-    #     n_graphs=5,
-    #     n_init=10,
-    #     n_iter=100,
-    #     alpha=1e-3,
-    #     tol=1e-5,
-    #     seed=42,
-    # )
-    # print(f"Stackelberg elapsed: {time.time() - _t0:.1f}s")
+

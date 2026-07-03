@@ -55,3 +55,44 @@ def degree_lifting(A: np.ndarray) -> np.ndarray:
         V[idx:idx + d, j] = 1.0
         idx += d
     return V
+
+
+def prune_long_edges(A: np.ndarray, W: np.ndarray, threshold: float) -> np.ndarray:
+    """Remove edges whose travel time exceeds a threshold.
+
+    Returns A_pruned: (m, m) binary adjacency matrix equal to A, but with
+    A_pruned[i, j] = 0 wherever W[i, j] > threshold.
+    """
+    return A * (W <= threshold)
+
+
+def san_francisco_graph() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build the 12-node SF police district graph from the RoSSO paper (John et al., ICRA 2024).
+
+    The 12 nodes are important intersections in a downtown San Francisco police
+    district, connected as a complete graph. W(i, j) is the driving time in
+    minutes from intersection i to j (asymmetric due to one-way streets etc.),
+    originally from Alamdari et al. 2014. The desired stationary distribution pi
+    is chosen proportional to the monthly crime rate at each intersection.
+    Returns A: (12, 12) binary adjacency matrix (all ones, including diagonal).
+    Returns W: (12, 12) travel-time weight matrix.
+    Returns pi: (12,) desired stationary distribution, summing to 1.
+    """
+    W = np.array([
+        [1, 3, 3, 5, 4, 6, 3, 5, 7, 4, 6, 6],
+        [3, 1, 5, 4, 2, 4, 4, 5, 5, 3, 5, 5],
+        [3, 5, 1, 7, 6, 8, 3, 4, 9, 4, 8, 7],
+        [6, 4, 7, 1, 5, 6, 4, 7, 5, 6, 6, 7],
+        [4, 3, 6, 5, 1, 3, 5, 5, 6, 3, 4, 4],
+        [6, 4, 8, 5, 3, 1, 6, 7, 3, 6, 2, 3],
+        [2, 5, 3, 5, 6, 7, 1, 5, 7, 5, 7, 8],
+        [3, 5, 2, 7, 6, 7, 3, 1, 9, 3, 7, 5],
+        [8, 6, 9, 4, 6, 4, 6, 9, 1, 8, 5, 7],
+        [4, 3, 4, 6, 3, 5, 5, 3, 7, 1, 5, 3],
+        [6, 4, 8, 6, 4, 2, 6, 6, 4, 5, 1, 3],
+        [6, 4, 6, 6, 3, 3, 6, 4, 5, 3, 2, 1],
+    ], dtype=float)
+    A = np.ones_like(W)
+    pi = np.array([133, 90, 89, 87, 83, 83, 74, 64, 48, 43, 38, 34], dtype=float) / 866
+    return A, W, pi
+
