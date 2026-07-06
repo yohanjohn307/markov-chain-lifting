@@ -15,8 +15,7 @@ from optimize import (
     project_Q_bar,
     _grad_kemeny,
     _grad_lifted_kemeny,
-    make_grad_lifted_rte,
-    make_grad_lifted_stackelberg,
+    make_grad_stackelberg,
     make_project_Q_bar,
     make_project_Q,
     projected_gradient_descent,
@@ -458,35 +457,41 @@ def fig_erdos_renyi_stackelberg_improvement(
     p_values=None,
     n_graphs: int = 20,
     n_init: int = 3,
-    n_iter: int = 250,
-    alpha: float = 0.1,
-    tol: float = 1e-6,
+    n_iter_phys: int = 250,
+    alpha_phys: float = 1.0,
+    tol_phys: float = 1e-6,
+    n_iter_lift: int = 250,
+    alpha_lift: float = 0.1,
+    tol_lift: float = 1e-6,
     eps: float = 1e-6,
-    temp0: float = 1e-1,
+    temp0: float = 1e-3,
     temp_min: float = 1e-6,
     seed: int = 42,
 ) -> None:
     """Ridgeline plot of Stackelberg game metric improvement via degree lifting vs Erdős-Rényi edge probability p.
 
     For each p, generates n_graphs random connected G(m, p) graphs.  For every graph:
-      1. Maximises the Stackelberg metric in the physical space via PGD (n_init starts).
+      1. Maximises the Stackelberg metric in the physical space via PGD (n_init starts,
+         n_iter_phys iterations, step size alpha_phys, tolerance tol_phys).
          No stationary distribution constraint; epsilon=0 because irreducibility is
          enforced inherently by the Stackelberg metric.
-      2. Applies degree lifting and maximises the lifted Stackelberg metric via PGD (n_init starts).
+      2. Applies degree lifting and maximises the lifted Stackelberg metric via PGD
+         (n_init starts, n_iter_lift iterations, step size alpha_lift, tolerance tol_lift).
       3. Records J^lift(P*) - J(P_bar*).
     tau is set uniformly to the diameter of each graph (smallest duration guaranteeing
     nonzero capture probability from any node to any other).
-    The softmin temperature is annealed geometrically from temp0 to temp_min over
-    n_iter PGD iterations (temp_k = temp0 * temp_decay**k, temp_decay = (temp_min /
-    temp0)**(1/n_iter)), tightening the softmin -> min approximation as optimization
-    progresses while reusing a single compiled JIT kernel throughout (see
-    make_grad_lifted_stackelberg).
+    The softmin temperature is annealed geometrically from temp0 to temp_min over the
+    physical-space PGD's n_iter_phys iterations (temp_k = temp0 * temp_decay**k,
+    temp_decay = (temp_min / temp0)**(1/n_iter_phys)), tightening the softmin -> min
+    approximation as optimization progresses while reusing a single compiled JIT kernel
+    throughout (see make_grad_stackelberg). The same temp0 -> temp_decay schedule is
+    reused as-is for the lifted-space PGD.
     Results are visualised as a joypy ridgeline plot across trials.
     """
     if p_values is None:
         p_values = np.linspace(0.3, 0.8, 4)
 
-    temp_decay = (temp_min / temp0) ** (1 / n_iter)
+    temp_decay = (temp_min / temp0) ** (1 / n_iter_phys)
 
     all_diffs: list[list[float]] = []
     all_graphs: list[list[np.ndarray]] = []
@@ -519,8 +524,8 @@ def fig_erdos_renyi_stackelberg_improvement(
             capt_prob_phys = np.inf  # tracks negated J; lower = better (higher J)
             best_Q_bar: np.ndarray | None = None
 
-            # V=I_m collapses _lifted_stackelberg_Q to the standard Stackelberg metric
-            grad_stackelberg = make_grad_lifted_stackelberg(np.eye(m), tau)
+            # V defaults to I_m, collapsing _stackelberg_Q to the standard Stackelberg metric
+            grad_stackelberg = make_grad_stackelberg(tau)
             phys_proj = make_project_Q_bar(A, pi_bar=None, epsilon=0.0)
             _t0_phys = time.perf_counter()
             for _ in range(n_init):
@@ -529,9 +534,9 @@ def fig_erdos_renyi_stackelberg_improvement(
 
                 Q_opt, hist = projected_gradient_descent(
                     Q0,
-                    lambda Q, temp, f=grad_stackelberg: tuple(-x for x in f(Q, temp)),
+                    lambda Q, lse_temp, f=grad_stackelberg: tuple(-x for x in f(Q, lse_temp)),
                     phys_proj,
-                    alpha, n_iter, tol,
+                    alpha_phys, n_iter_phys, tol_phys,
                     temp_schedule=lambda k: temp0 * temp_decay ** k,
                 )
                 if hist and hist[-1] < capt_prob_phys:
@@ -548,7 +553,7 @@ def fig_erdos_renyi_stackelberg_improvement(
 
             best_Q_lift: np.ndarray | None = None
             capt_prob_lift = np.inf  # tracks negated J^lift
-            grad_lifted_stb = make_grad_lifted_stackelberg(V, tau)
+            grad_lifted_stb = make_grad_stackelberg(tau, V)
             lift_proj = make_project_Q(best_Q_bar, V, epsilon=0.0)
             _t0_lift = time.perf_counter()
             for _ in range(n_init):
@@ -557,9 +562,9 @@ def fig_erdos_renyi_stackelberg_improvement(
 
                 Q_lift_opt, hist_lift = projected_gradient_descent(
                     Q0_lift_proj,
-                    lambda Q, temp, f=grad_lifted_stb: tuple(-x for x in f(Q, temp)),
+                    lambda Q, lse_temp, f=grad_lifted_stb: tuple(-x for x in f(Q, lse_temp)),
                     lift_proj,
-                    alpha, n_iter, tol,
+                    alpha_lift, n_iter_lift, tol_lift,
                     temp_schedule=lambda k: temp0 * temp_decay ** k,
                 )
                 if hist_lift and hist_lift[-1] < capt_prob_lift:
@@ -626,7 +631,7 @@ if __name__ == "__main__":
     fig_san_francisco_kemeny_improvement(
         w_max=4,
         n_trials=5,
-        n_init=1,
+        n_init=5,
         n_iter=250,
         alpha=1e-5,
         tol=1e-2,
@@ -640,25 +645,12 @@ if __name__ == "__main__":
     #     p_values=np.linspace(0.2, 0.8, 4),
     #     n_graphs=5,
     #     n_init=1,
-    #     n_iter=250,
-    #     alpha=0.1,
-    #     tol=1e-6,
+    #     n_iter_phys=250,
+    #     alpha_phys=1.0,
+    #     tol_phys=1e-6,
+    #     n_iter_lift=250,
+    #     alpha_lift=0.1,
+    #     tol_lift=1e-6,
     #     seed=42,
     # )
     # print(f"Stackelberg elapsed: {time.time() - _t0:.1f}s")
-
-    # _t0 = time.time()
-    # fig_erdos_renyi_rte_improvement(
-    #     m=6,
-    #     p_values=np.linspace(0.3, 0.8, 3),
-    #     n_graphs=5,
-    #     n_init=1,
-    #     n_iter=100,
-    #     alpha=1e-3,
-    #     eta=0.5,
-    #     tol=1e-5,
-    #     seed=42,
-    # )
-    # print(f"RTE elapsed: {time.time() - _t0:.1f}s")
-
-

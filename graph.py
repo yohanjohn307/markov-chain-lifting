@@ -78,7 +78,7 @@ def san_francisco_graph() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     Returns W: (12, 12) travel-time weight matrix.
     Returns pi: (12,) desired stationary distribution, summing to 1.
     """
-    W = np.array([
+    Wbar = np.array([
         [1, 3, 3, 5, 4, 6, 3, 5, 7, 4, 6, 6],
         [3, 1, 5, 4, 2, 4, 4, 5, 5, 3, 5, 5],
         [3, 5, 1, 7, 6, 8, 3, 4, 9, 4, 8, 7],
@@ -92,7 +92,7 @@ def san_francisco_graph() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         [6, 4, 8, 6, 4, 2, 6, 6, 4, 5, 1, 3],
         [6, 4, 6, 6, 3, 3, 6, 4, 5, 3, 2, 1],
     ], dtype=float)
-    A = np.ones_like(W)
-    pi = np.array([133, 90, 89, 87, 83, 83, 74, 64, 48, 43, 38, 34], dtype=float) / 866
-    return A, W, pi
+    A = np.ones_like(Wbar)
+    pi_bar = np.array([133, 90, 89, 87, 83, 83, 74, 64, 48, 43, 38, 34], dtype=float) / 866
+    return A, Wbar, pi_bar
 

@@ -1,6 +1,13 @@
 import numpy as np
 
 
+# Absolute tolerance for equality constraints checked on matrices that may come
+# from numerical solvers (e.g. the OSQP-based projections in optimize.py), rather
+# than being constructed exactly. optimize.py's solver tolerances are set tighter
+# than this so a converged projection never spuriously fails these checks.
+EQUALITY_ATOL = 1e-4
+
+
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
@@ -10,7 +17,7 @@ def _check_stochastic(P: np.ndarray) -> None:
         raise ValueError(f"expected a square matrix, got shape {P.shape}")
     if not np.all(P >= 0):
         raise ValueError("transition matrix must have non-negative entries")
-    if not np.allclose(P.sum(axis=1), 1):
+    if not np.allclose(P.sum(axis=1), 1, atol=EQUALITY_ATOL):
         raise ValueError("transition matrix must be row-stochastic (each row must sum to 1)")
 
 
@@ -35,7 +42,7 @@ def _check_ergodic_flow(Q: np.ndarray, m: int | None = None) -> None:
     row_sums = Q.sum(axis=1)
     if not np.all(row_sums > 0):
         raise ValueError("ergodic flow matrix must have positive row sums")
-    if not np.allclose(row_sums, Q.sum(axis=0), atol=1e-4):
+    if not np.allclose(row_sums, Q.sum(axis=0), atol=EQUALITY_ATOL):
         raise ValueError("ergodic flow matrix must satisfy Q 1 = Q^T 1 (equal row and column sums)")
 
 
