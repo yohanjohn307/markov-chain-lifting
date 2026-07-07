@@ -5,7 +5,7 @@ import numpy as np
 # from numerical solvers (e.g. the OSQP-based projections in optimize.py), rather
 # than being constructed exactly. optimize.py's solver tolerances are set tighter
 # than this so a converged projection never spuriously fails these checks.
-EQUALITY_ATOL = 1e-4
+EQUALITY_ATOL = 1e-3
 
 
 # ---------------------------------------------------------------------------

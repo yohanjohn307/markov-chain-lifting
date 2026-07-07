@@ -9,7 +9,7 @@ from markov import _check_mapping, _check_ergodic_flow, EQUALITY_ATOL
 # OSQP must converge well past markov.EQUALITY_ATOL, since its solutions feed
 # straight into equality checks (Q 1 = Q^T 1, V^T Q V = Q_bar) there; otherwise a
 # projection that OSQP considers converged can still get rejected downstream.
-_SOLVER_TOL = EQUALITY_ATOL * 1e-3
+_SOLVER_TOL = EQUALITY_ATOL * 1e-2
 
 
 def project_Q(Q_tilde: np.ndarray, Q_bar: np.ndarray, V: np.ndarray, epsilon: float = 1e-6) -> np.ndarray:
@@ -403,7 +403,7 @@ def projected_gradient_descent(
     n_iter: int = 100,
     tol: float = 1e-6,
     temp_schedule=None,
-) -> tuple[np.ndarray, list[float]]:
+) -> tuple[np.ndarray, list[float], int]:
     """Minimize an objective via projected gradient descent.
 
     Each iteration:
@@ -444,15 +444,19 @@ def projected_gradient_descent(
           temp_schedule=lambda k: temp0 * decay ** k,
       )
 
-    Returns (final Q, history of objective values). history[-1] always equals the
-    objective value at the returned Q.
+    Returns (final Q, history of objective values, number of iterations run).
+    history[-1] always equals the objective value at the returned Q. The
+    iteration count is the number of gradient+projection steps actually taken:
+    fewer than n_iter if the tol early-stop fired, else n_iter.
     """
     Q = Q0.copy()
     history: list[float] = []
+    n_iters = n_iter
     for k in range(n_iter):
         val, grad = grad_fn(Q, temp_schedule(k)) if temp_schedule is not None else grad_fn(Q)
         history.append(val)
         if len(history) > 1 and abs(history[-1] - history[-2]) < tol:
+            n_iters = k
             break
         Q_tilde = Q - alpha * grad
         Q = project_fn(Q_tilde)
@@ -464,4 +468,4 @@ def projected_gradient_descent(
         val, _ = grad_fn(Q, temp_schedule(n_iter)) if temp_schedule is not None else grad_fn(Q)
         history.append(val)
 
-    return Q, history
+    return Q, history, n_iters
