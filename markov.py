@@ -1,10 +1,6 @@
 import numpy as np
 
 
-# Absolute tolerance for equality constraints checked on matrices that may come
-# from numerical solvers (e.g. the OSQP-based projections in optimize.py), rather
-# than being constructed exactly. optimize.py's solver tolerances are set tighter
-# than this so a converged projection never spuriously fails these checks.
 EQUALITY_ATOL = 1e-3
 
 

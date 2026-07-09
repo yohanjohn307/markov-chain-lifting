@@ -6,7 +6,7 @@ import networkx as nx
 
 from markov import stationary_distribution, collapsing, ergodic_flow_to_transition, conductance
 from metrics import kemeny, lifted_kemeny, stackelberg, lifted_stackelberg, return_time_entropy, lifted_return_time_entropy
-from graph import erdos_renyi_graph, random_chain, degree_lifting, san_francisco_graph, prune_long_edges
+from graph import erdos_renyi_graph, erdos_renyi_digraph, random_chain, degree_lifting, san_francisco_graph, prune_long_edges
 from optimize import (
     _grad_kemeny,
     _grad_lifted_kemeny,
@@ -188,19 +188,30 @@ def fig_random_graphs(m: int = 10, p_values=None, seed: int = 42) -> None:
 
     fig, axes = plt.subplots(1, len(p_values), figsize=(6 * len(p_values), 6))
 
-    for ax, p in zip(axes, p_values):
+    rng = np.random.default_rng(seed)
+
+    graphs = []
+    for p in p_values:
         A = erdos_renyi_graph(m, p, seed=seed)
-
         G = nx.from_numpy_array(A)
-        off_deg = (A - np.diag(np.diag(A))).sum(axis=1).astype(int)
+        pi_bar = rng.dirichlet(5 * np.ones(m))
         pos = nx.spring_layout(G, seed=seed)
+        graphs.append((G, pi_bar, pos))
 
+    vmin = min(pi_bar.min() for _, pi_bar, _ in graphs)
+    vmax = max(pi_bar.max() for _, pi_bar, _ in graphs)
+
+    for ax, p, (G, pi_bar, pos) in zip(axes, p_values, graphs):
         nx.draw_networkx(G, pos=pos, ax=ax,
-                         node_color=off_deg, cmap='viridis',
+                         node_color=pi_bar, cmap='viridis', vmin=vmin, vmax=vmax,
                          node_size=700, font_color='white', font_weight='bold')
-        ax.set_title(f'Erdős–Rényi $G({m},\\ {p})$, seed={seed}', pad=12)
+        ax.set_title(f'Erdős–Rényi $G({m},\\ {p})$', pad=12)
 
-    plt.tight_layout()
+    sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
+    sm.set_array([])
+    fig.colorbar(sm, ax=axes, orientation='horizontal', fraction=0.05, pad=0.05,
+                 label='Stationary distribution $\\bar\\pi$')
+
     plt.savefig('random_graphs.pdf', bbox_inches='tight')
     plt.savefig('random_graphs.png', dpi=150, bbox_inches='tight')
 
@@ -259,7 +270,8 @@ def fig_erdos_renyi_kemeny_improvement(
         V_p: list[np.ndarray] = []
         conductance_lb_p: list[float] = []
         while len(diffs_p) < n_graphs:
-            A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
+            A = erdos_renyi_digraph(m, p, seed=int(rng.integers(1 << 31)))
+            # A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
 
             # ensure reasonable compatibility between stationary distribution and graph
             best_Q_bar: np.ndarray | None = None
@@ -445,7 +457,8 @@ def fig_erdos_renyi_stackelberg_improvement(
         iters_lift_p: list[int] = []
         V_p: list[np.ndarray] = []
         while len(diffs_p) < n_graphs:
-            A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
+            A = erdos_renyi_digraph(m, p, seed=int(rng.integers(1 << 31)))
+            # A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
 
             # Uniform tau = graph diameter (self-loops excluded; erdos_renyi_graph
             # guarantees connectedness so the diameter is always finite).
@@ -462,27 +475,29 @@ def fig_erdos_renyi_stackelberg_improvement(
             capt_prob_phys = 0.0
             best_n_iters_phys = 0
 
-            while capt_prob_phys < 0.01:
-                _t0_phys = time.perf_counter()
-                for _ in range(n_init):
-                    Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
-                    Q0 = phys_proj(Q0)
+            _t0_phys = time.perf_counter()
+            for _ in range(n_init):
+                Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
+                Q0 = phys_proj(Q0)
 
-                    Q_opt, hist, n_iters_phys = projected_gradient_descent(
-                        Q0,
-                        lambda Q, lse_temp, f=grad_stackelberg: tuple(-x for x in f(Q, lse_temp)),
-                        phys_proj,
-                        alpha_phys, n_iter_phys, tol_phys,
-                        temp_schedule=lambda k: temp0 * temp_decay ** k,
-                    )
-                    if hist:
-                        P_opt = ergodic_flow_to_transition(Q_opt)
-                        capt_prob_tmp = stackelberg(P_opt, tau)
-                        if capt_prob_tmp > capt_prob_phys:
-                            capt_prob_phys = capt_prob_tmp
-                            best_Q_bar = Q_opt
-                            best_n_iters_phys = n_iters_phys
-                _t1_phys = time.perf_counter()
+                Q_opt, hist, n_iters_phys = projected_gradient_descent(
+                    Q0,
+                    lambda Q, lse_temp, f=grad_stackelberg: tuple(-x for x in f(Q, lse_temp)),
+                    phys_proj,
+                    alpha_phys, n_iter_phys, tol_phys,
+                    temp_schedule=lambda k: temp0 * temp_decay ** k,
+                )
+                if hist:
+                    P_opt = ergodic_flow_to_transition(Q_opt)
+                    capt_prob_tmp = stackelberg(P_opt, tau)
+                    if capt_prob_tmp > capt_prob_phys:
+                        capt_prob_phys = capt_prob_tmp
+                        best_Q_bar = Q_opt
+                        best_n_iters_phys = n_iters_phys
+            _t1_phys = time.perf_counter()
+
+            if capt_prob_phys < 0.01:
+                continue
 
             # ------------------------------------------------------------------
             # 2. Build degree lifting and maximise lifted Stackelberg metric J^lift
@@ -1032,6 +1047,40 @@ if __name__ == "__main__":
     # )
     # print(f"E-R Kemeny elapsed: {time.time() - _t0:.1f}s")
 
+    # This took 10 hrs
+    _t0 = time.time()
+    fig_erdos_renyi_stackelberg_improvement(
+        m=10,
+        p_values=np.linspace(0.2, 0.8, 7),
+        n_graphs=20,
+        n_init=5,
+        n_iter_phys=250,
+        alpha_phys=1.0,
+        tol_phys=1e-5,
+        n_iter_lift=250,
+        alpha_lift=0.1,
+        tol_lift=1e-6,
+        seed=42,
+    )
+    print(f"E-R Stackelberg elapsed: {time.time() - _t0:.1f}s")
+
+    # _t0 = time.time()
+    # fig_erdos_renyi_rte_improvement(
+    #     m=10,
+    #     p_values=np.linspace(0.2, 0.8, 2),
+    #     n_graphs=2,
+    #     n_init=1,
+    #     n_iter_phys=200,
+    #     alpha_phys=1e-2,
+    #     tol_phys=1e-6,
+    #     n_iter_lift=200,
+    #     alpha_lift=1e-3,
+    #     tol_lift=1e-6,
+    #     eta=0.25,
+    #     seed=42,
+    # )
+    # print(f"E-R RTE elapsed: {time.time() - _t0:.1f}s")
+
     # # This took 45 mins
     # _t0 = time.time()
     # fig_san_francisco_kemeny_improvement(
@@ -1047,40 +1096,6 @@ if __name__ == "__main__":
     #     seed=42,
     # )
     # print(f"SF Kemeny elapsed: {time.time() - _t0:.1f}s")
-
-    # # ~1 min per sim
-    # _t0 = time.time()
-    # fig_erdos_renyi_stackelberg_improvement(
-    #     m=10,
-    #     p_values=np.linspace(0.2, 0.8, 2),
-    #     n_graphs=2,
-    #     n_init=1,
-    #     n_iter_phys=250,
-    #     alpha_phys=1.0,
-    #     tol_phys=1e-5,
-    #     n_iter_lift=250,
-    #     alpha_lift=0.1,
-    #     tol_lift=1e-6,
-    #     seed=42,
-    # )
-    # print(f"E-R Stackelberg elapsed: {time.time() - _t0:.1f}s")
-
-    _t0 = time.time()
-    fig_erdos_renyi_rte_improvement(
-        m=10,
-        p_values=np.linspace(0.2, 0.8, 2),
-        n_graphs=2,
-        n_init=1,
-        n_iter_phys=200,
-        alpha_phys=1e-2,
-        tol_phys=1e-6,
-        n_iter_lift=200,
-        alpha_lift=1e-3,
-        tol_lift=1e-6,
-        eta=0.25,
-        seed=42,
-    )
-    print(f"E-R RTE elapsed: {time.time() - _t0:.1f}s")
 
     # # This took 30 mins
     # _t0 = time.time()

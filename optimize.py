@@ -6,41 +6,29 @@ from jax.scipy.special import logsumexp
 
 from markov import _check_mapping, _check_ergodic_flow, EQUALITY_ATOL
 
-# OSQP must converge well past markov.EQUALITY_ATOL, since its solutions feed
-# straight into equality checks (Q 1 = Q^T 1, V^T Q V = Q_bar) there; otherwise a
-# projection that OSQP considers converged can still get rejected downstream.
+
 _SOLVER_TOL = EQUALITY_ATOL * 1e-2
+_OK_STATUSES = {cp.OPTIMAL, cp.OPTIMAL_INACCURATE}
+_DEFAULT_MAX_ITER = 10_000
 
 
-def project_Q(Q_tilde: np.ndarray, Q_bar: np.ndarray, V: np.ndarray, epsilon: float = 1e-6) -> np.ndarray:
-    """Project Q_tilde onto the feasible set of liftings of Q_bar (Eq. 35).
+def _solve_projection(prob: cp.Problem, warm_start: bool, max_iter: int = _DEFAULT_MAX_ITER) -> None:
+    """Solve a projection QP, falling back to a cold start if warm-started OSQP stalls."""
+    prob.solve(solver=cp.OSQP, warm_start=warm_start, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL, max_iter=max_iter)
+    if warm_start and prob.status not in _OK_STATUSES:
+        prob.solve(solver=cp.OSQP, warm_start=False, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL, max_iter=max_iter)
 
-    Solves: min ||Q - Q_tilde||_F  subject to  Q 1_n = Q^T 1_n,
-    epsilon * V ceil(Q_bar) V^T <= Q <= V ceil(Q_bar) V^T,  V^T Q V = Q_bar.
-    """
-    _check_ergodic_flow(Q_bar, m=V.shape[1])
-    _check_mapping(V)
-    n = V.shape[0]
-    Q_bar_ceil = (Q_bar > epsilon).astype(int)
-    U = V @ Q_bar_ceil @ V.T
-    Q = cp.Variable((n, n))
-    constraints = [
-        Q @ np.ones(n) == Q.T @ np.ones(n),
-        Q >= epsilon * U,
-        Q <= U,
-        V.T @ Q @ V == Q_bar,
-    ]
-    prob = cp.Problem(cp.Minimize(cp.sum_squares(Q - Q_tilde)), constraints)
-    prob.solve(solver=cp.OSQP, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL)
-    if Q.value is None:
-        raise RuntimeError("project_Q: QP did not converge; check that Q_bar is a valid ergodic flow for V")
-    return np.maximum(Q.value, 0.0)
+
+def _clip_to_support(Q_value: np.ndarray, support: np.ndarray, epsilon: float) -> np.ndarray:
+    """Clip a solved projection to its own epsilon*support <= Q <= support constraint."""
+    return np.where(support > 0, np.maximum(Q_value, epsilon), 0.0)
 
 
 def make_project_Q(
     Q_bar: np.ndarray,
     V: np.ndarray,
     epsilon: float = 1e-6,
+    max_iter: int = _DEFAULT_MAX_ITER,
 ):
     """Return a cached projection function for the lifted feasible set.
 
@@ -50,7 +38,7 @@ def make_project_Q(
     _check_ergodic_flow(Q_bar, m=V.shape[1])
     _check_mapping(V)
     n = V.shape[0]
-    Q_bar_ceil = (Q_bar > 1e-6).astype(int)
+    Q_bar_ceil = (Q_bar > 1e-6).astype(int) # hardcoded to catch Stackelberg case where epsilon = 0
     U = V @ Q_bar_ceil @ V.T
     Q_tilde_p = cp.Parameter((n, n))
     Q = cp.Variable((n, n))
@@ -58,54 +46,32 @@ def make_project_Q(
         Q @ np.ones(n) == Q.T @ np.ones(n),
         Q >= epsilon * U,
         Q <= U,
-        V.T @ Q @ V == Q_bar,
+        # V.T @ Q @ V == Q_bar,
+        # Exact equality is infeasible whenever Q_bar's own row/col sums differ by
+        # more than machine precision (e.g. Q_bar came from another PGD projection,
+        # which only converges to _SOLVER_TOL): combined with Q @ 1 == Q^T @ 1 above,
+        # exact equality here would force Q_bar to have exactly equal row/col sums,
+        # which _check_ergodic_flow only guarantees to EQUALITY_ATOL. Relaxing to a
+        # band of that width keeps the constraint matrix full rank so OSQP converges.
+        cp.abs(V.T @ Q @ V - Q_bar) <= EQUALITY_ATOL,
     ]
     prob = cp.Problem(cp.Minimize(cp.sum_squares(Q - Q_tilde_p)), constraints)
 
     def project(Q_tilde: np.ndarray) -> np.ndarray:
         Q_tilde_p.value = Q_tilde
-        prob.solve(solver=cp.OSQP, warm_start=True, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL)
-        if Q.value is None:
-            raise RuntimeError("project_Q: QP did not converge; check that Q_bar is a valid ergodic flow for V")
-        return np.maximum(Q.value, 0.0)
+        _solve_projection(prob, warm_start=True, max_iter=max_iter)
+        if Q.value is None or prob.status not in _OK_STATUSES:
+            raise RuntimeError(f"project_Q: QP did not converge (status={prob.status}); check that Q_bar is a valid ergodic flow for V")
+        return _clip_to_support(Q.value, U, epsilon)
 
     return project
-
-
-def project_Q_bar(
-    Q_tilde: np.ndarray,
-    A: np.ndarray,
-    pi_bar: np.ndarray | None = None,
-    epsilon: float = 1e-6,
-) -> np.ndarray:
-    """Project Q_tilde onto feasible ergodic flows for the physical space.
-
-    Solves: min ||Q - Q_tilde||_F  subject to  graph-compatibility and either:
-      - pi_bar provided: Q 1_m = pi_bar, Q^T 1_m = pi_bar  (fixed stationary distribution,
-        used for Kemeny and RTE)
-      - pi_bar is None:  Q 1_m = Q^T 1_m  (free stationary distribution,
-        used for Stackelberg where irreducibility is enforced by the metric)
-    In both cases: epsilon * A <= Q <= A, where A is the graph adjacency matrix.
-    """
-    m = Q_tilde.shape[0]
-    Q = cp.Variable((m, m))
-    ones = np.ones(m)
-    if pi_bar is not None:
-        stationarity = [Q @ ones == pi_bar, Q.T @ ones == pi_bar]
-    else:
-        stationarity = [Q @ ones == Q.T @ ones]
-    constraints = stationarity + [Q >= epsilon * A, Q <= A]
-    prob = cp.Problem(cp.Minimize(cp.sum_squares(Q - Q_tilde)), constraints)
-    prob.solve(solver=cp.OSQP, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL)
-    if Q.value is None:
-        raise RuntimeError("project_Q_bar: QP did not converge; check inputs are consistent")
-    return np.maximum(Q.value, 0.0)
 
 
 def make_project_Q_bar(
     A: np.ndarray,
     pi_bar: np.ndarray | None = None,
     epsilon: float = 1e-6,
+    max_iter: int = _DEFAULT_MAX_ITER,
 ):
     """Return a cached projection function for the physical feasible set.
 
@@ -126,10 +92,10 @@ def make_project_Q_bar(
 
     def project(Q_tilde: np.ndarray) -> np.ndarray:
         Q_tilde_p.value = Q_tilde
-        prob.solve(solver=cp.OSQP, warm_start=True, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL)
-        if Q.value is None:
-            raise RuntimeError("project_Q_bar: QP did not converge; check inputs are consistent")
-        return np.maximum(Q.value, 0.0)
+        _solve_projection(prob, warm_start=True, max_iter=max_iter)
+        if Q.value is None or prob.status not in _OK_STATUSES:
+            raise RuntimeError(f"project_Q_bar: QP did not converge (status={prob.status}); check inputs are consistent")
+        return _clip_to_support(Q.value, A, epsilon)
 
     return project
 
@@ -295,7 +261,13 @@ def _stackelberg_Q(Q: np.ndarray, V: np.ndarray, tau: np.ndarray, W: np.ndarray,
     recursion (Eq. 43).
     """
     pi = Q.sum(axis=1)
-    P = Q / pi[:, None]
+    # epsilon=0 callers (e.g. the Stackelberg PGD runs) permit intermediate
+    # iterates where a virtual state's total flow is exactly zero as long as a
+    # sibling state in the same group covers the rest of V^T Q V = Q_bar.
+    # Guard both divisions below so that a zero-flow (virtual or group) state
+    # yields a zero row/entry instead of 0/0 = NaN, which would otherwise
+    # poison the whole gradient.
+    P = Q / jnp.where(pi > 0, pi, 1.0)[:, None]
     n, m = V.shape
     pi_bar = V.T @ pi
     tau_max = int(tau.max())
@@ -304,7 +276,7 @@ def _stackelberg_Q(Q: np.ndarray, V: np.ndarray, tau: np.ndarray, W: np.ndarray,
     for k in range(1, tau_max + 1):
         col_mask = jnp.array(tau >= k)[None, :].astype(Q.dtype)
         Psi_tilde = Psi_tilde + F_hist[k] * col_mask
-    Psi_lift = (V.T @ (pi[:, None] * Psi_tilde)) / pi_bar[:, None]
+    Psi_lift = (V.T @ (pi[:, None] * Psi_tilde)) / jnp.where(pi_bar > 0, pi_bar, 1.0)[:, None]
     return -lse_temp * logsumexp(-Psi_lift.reshape(-1) / lse_temp)
 
 

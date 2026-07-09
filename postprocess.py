@@ -23,6 +23,8 @@ def fig_erdos_renyi_kemeny_percent_decrease(
     all_graphs = data['graphs']
     all_Q_bar = data['Q_bar']
     all_Q_lift = data['Q_lift']
+    all_times_phys = data['times_phys']
+    all_times_lift = data['times_lift']
 
     all_pct: list[list[float]] = []
     for p_idx, p in enumerate(p_values):
@@ -37,9 +39,13 @@ def fig_erdos_renyi_kemeny_percent_decrease(
             k_lift = lifted_kemeny(P_lift, V)
             if k_phys > 0:
                 pct_p.append(100.0 * (k_phys - k_lift) / k_phys)
+        times_phys_p = all_times_phys[p_idx]
+        times_lift_p = all_times_lift[p_idx]
         print(
             f"p={p:.2f}: {len(pct_p)} graphs, "
-            + (f"percent decrease = {np.mean(pct_p):.2f}% ± {np.std(pct_p):.2f}%" if pct_p else ""),
+            + (f"percent decrease = {np.mean(pct_p):.2f}% ± {np.std(pct_p):.2f}%, " if pct_p else "")
+            + (f"mean compute time: phys={np.mean(times_phys_p):.2f}s, lift={np.mean(times_lift_p):.2f}s"
+               if len(times_phys_p) else ""),
             flush=True,
         )
         all_pct.append(pct_p)
@@ -101,6 +107,8 @@ def fig_erdos_renyi_stackelberg_percent_decrease(
     all_Q_bar = data['Q_bar']
     all_Q_lift = data['Q_lift']
     all_V = data['V']
+    all_times_phys = data['times_phys']
+    all_times_lift = data['times_lift']
 
     all_pct: list[list[float]] = []
     for p_idx, p in enumerate(p_values):
@@ -119,9 +127,13 @@ def fig_erdos_renyi_stackelberg_percent_decrease(
             j_lift = lifted_stackelberg(P_lift, V, tau)
             if j_phys > 0:
                 pct_p.append(100.0 * (j_lift - j_phys) / j_phys)
+        times_phys_p = all_times_phys[p_idx]
+        times_lift_p = all_times_lift[p_idx]
         print(
             f"p={p:.2f}: {len(pct_p)} graphs, "
-            + (f"percent increase = {np.mean(pct_p):.2f}% ± {np.std(pct_p):.2f}%" if pct_p else ""),
+            + (f"percent increase = {np.mean(pct_p):.2f}% ± {np.std(pct_p):.2f}%, " if pct_p else "")
+            + (f"mean compute time: phys={np.mean(times_phys_p):.2f}s, lift={np.mean(times_lift_p):.2f}s"
+               if len(times_phys_p) else ""),
             flush=True,
         )
         all_pct.append(pct_p)
@@ -135,7 +147,7 @@ def fig_erdos_renyi_stackelberg_percent_decrease(
 
     all_vals = [v for d in valid_pct for v in d]
     x_min = float(np.percentile(all_vals, 1))
-    x_max = float(np.percentile(all_vals, 99)) * 1.05
+    x_max = float(np.percentile(all_vals, 95)) * 1.05
 
     df = pd.DataFrame(
         {f'$p={p:.2f}$': pd.Series(
@@ -168,5 +180,5 @@ def fig_erdos_renyi_stackelberg_percent_decrease(
 
 
 if __name__ == "__main__":
-    fig_erdos_renyi_kemeny_percent_decrease()
+    # fig_erdos_renyi_kemeny_percent_decrease()
     fig_erdos_renyi_stackelberg_percent_decrease()

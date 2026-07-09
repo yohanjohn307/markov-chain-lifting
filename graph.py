@@ -1,29 +1,52 @@
 import numpy as np
 
 
-def erdos_renyi_graph(m: int, p: float, seed: int | None = None) -> np.ndarray:
+def _reachable(A: np.ndarray) -> bool:
+    """Check whether every node is reachable from node 0 by following edges of A."""
+    m = A.shape[0]
+    visited = {0}
+    queue = [0]
+    while queue:
+        v = queue.pop()
+        for u in np.where(A[v] > 0)[0]:
+            if u not in visited:
+                visited.add(u)
+                queue.append(u)
+    return len(visited) == m
+
+
+def erdos_renyi_graph(m: int, p: float, seed: int | None = None, max_iter: int = 1000) -> np.ndarray:
     """Sample a connected undirected Erdős-Rényi graph G(m, p).
 
     Re-samples until connected (required for irreducible Markov chains).
     Returns A: (m, m) symmetric binary adjacency matrix with ones on the diagonal.
     """
     rng = np.random.default_rng(seed)
-    for _ in range(10_000):
+    for _ in range(max_iter):
         U = (rng.random((m, m)) < p).astype(float)
         A = np.triu(U, k=1)
         A = A + A.T
         np.fill_diagonal(A, 1)
-        visited = {0}
-        queue = [0]
-        while queue:
-            v = queue.pop()
-            for u in np.where(A[v] > 0)[0]:
-                if u not in visited:
-                    visited.add(u)
-                    queue.append(u)
-        if len(visited) == m:
+        if _reachable(A):
             return A
-    raise RuntimeError(f"Could not generate a connected G({m}, {p}) after 10000 tries; increase p")
+    raise RuntimeError(f"Could not generate a connected G({m}, {p}) after {max_iter} tries; increase p")
+
+
+def erdos_renyi_digraph(m: int, p: float, seed: int | None = None, max_iter: int = 1000) -> np.ndarray:
+    """Sample a strongly connected directed Erdős-Rényi digraph D(m, p).
+
+    Edge directions are sampled independently, i.e. A[i, j] and A[j, i] need not
+    agree. Re-samples until strongly connected (required for irreducible Markov
+    chains). Returns A: (m, m) binary adjacency matrix with ones on the diagonal,
+    where A[i, j] = 1 denotes a directed edge i -> j.
+    """
+    rng = np.random.default_rng(seed)
+    for _ in range(max_iter):
+        A = (rng.random((m, m)) < p).astype(float)
+        np.fill_diagonal(A, 1)
+        if _reachable(A) and _reachable(A.T):
+            return A
+    raise RuntimeError(f"Could not generate a strongly connected D({m}, {p}) after {max_iter} tries; increase p")
 
 
 def random_chain(A: np.ndarray, seed: int | None = None) -> np.ndarray:
