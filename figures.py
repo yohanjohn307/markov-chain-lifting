@@ -6,7 +6,19 @@ import networkx as nx
 
 from markov import stationary_distribution, collapsing, ergodic_flow_to_transition, conductance
 from metrics import kemeny, lifted_kemeny, stackelberg, lifted_stackelberg, return_time_entropy, lifted_return_time_entropy
-from graph import erdos_renyi_graph, erdos_renyi_digraph, random_chain, degree_lifting, san_francisco_graph, prune_long_edges
+from graph import (
+    erdos_renyi_graph,
+    erdos_renyi_digraph,
+    random_chain,
+    degree_lifting,
+    san_francisco_graph,
+    prune_long_edges,
+    uniform_lifting,
+    stationary_lifting,
+    betweenness_lifting,
+    eigenvector_lifting,
+    reversible_flow_lifting,
+)
 from optimize import (
     _grad_kemeny,
     _grad_lifted_kemeny,
@@ -42,6 +54,7 @@ def fig2() -> None:
     ax.legend()
     plt.tight_layout()
     plt.savefig('kemeny_vs_p.pdf')
+
 
 def fig3(seed: int = 42) -> None:
     """Reproduce Fig. 3: MLE estimation error vs. trajectory length.
@@ -103,6 +116,7 @@ def fig3(seed: int = 42) -> None:
     ax.set_ylabel(r'$\|\hat{\bar{P}} - \bar{P}\|_F$')
     plt.tight_layout()
     plt.savefig('estimation_errors.pdf')
+
 
 def fig4(seed: int = 42) -> None:
     """Reproduce Fig. 4: empirical mean capture time vs. number of trials for P_bar and lifted P.
@@ -181,6 +195,7 @@ def fig4(seed: int = 42) -> None:
     plt.tight_layout()
     plt.savefig('mean_capture_time.pdf')
 
+
 def fig_random_graphs(m: int = 10, p_values=None, seed: int = 42) -> None:
     """Plot randomly generated Erdős-Rényi graphs G(m, p) with self-loops for several p."""
     if p_values is None:
@@ -193,7 +208,7 @@ def fig_random_graphs(m: int = 10, p_values=None, seed: int = 42) -> None:
     graphs = []
     for p in p_values:
         A = erdos_renyi_graph(m, p, seed=seed)
-        G = nx.from_numpy_array(A)
+        G = nx.from_numpy_array(A, create_using=nx.Graph)
         pi_bar = rng.dirichlet(5 * np.ones(m))
         pos = nx.spring_layout(G, seed=seed)
         graphs.append((G, pi_bar, pos))
@@ -214,6 +229,43 @@ def fig_random_graphs(m: int = 10, p_values=None, seed: int = 42) -> None:
 
     plt.savefig('random_graphs.pdf', bbox_inches='tight')
     plt.savefig('random_graphs.png', dpi=150, bbox_inches='tight')
+
+
+def fig_random_digraphs(m: int = 10, p_values=None, seed: int = 42) -> None:
+    """Plot randomly generated Erdős-Rényi digraphs D(m, p) with self-loops for several p."""
+    if p_values is None:
+        p_values = [0.2, 0.4, 0.6, 0.8]
+
+    fig, axes = plt.subplots(1, len(p_values), figsize=(6 * len(p_values), 6))
+
+    rng = np.random.default_rng(seed)
+
+    graphs = []
+    for p in p_values:
+        A = erdos_renyi_digraph(m, p, seed=seed)
+        G = nx.from_numpy_array(A, create_using=nx.DiGraph)
+        pi_bar = rng.dirichlet(5 * np.ones(m))
+        pos = nx.spring_layout(G, seed=seed)
+        graphs.append((G, pi_bar, pos))
+
+    vmin = min(pi_bar.min() for _, pi_bar, _ in graphs)
+    vmax = max(pi_bar.max() for _, pi_bar, _ in graphs)
+
+    for ax, p, (G, pi_bar, pos) in zip(axes, p_values, graphs):
+        nx.draw_networkx(G, pos=pos, ax=ax,
+                         node_color=pi_bar, cmap='viridis', vmin=vmin, vmax=vmax,
+                         node_size=700, font_color='white', font_weight='bold',
+                         arrows=True, arrowstyle='-|>', arrowsize=15,
+                         connectionstyle='arc3,rad=0.1')
+        ax.set_title(f'Erdős–Rényi $D({m},\\ {p})$', pad=12)
+
+    sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
+    sm.set_array([])
+    fig.colorbar(sm, ax=axes, orientation='horizontal', fraction=0.05, pad=0.05,
+                 label='Stationary distribution $\\bar\\pi$')
+
+    plt.savefig('random_digraphs.pdf', bbox_inches='tight')
+    plt.savefig('random_digraphs.png', dpi=150, bbox_inches='tight')
 
 
 def fig_erdos_renyi_kemeny_improvement(
@@ -294,12 +346,23 @@ def fig_erdos_renyi_kemeny_improvement(
                     Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
                     Q0 = phys_proj(Q0)
 
-                    Q_opt, hist, n_iters_phys = projected_gradient_descent(
-                        Q0,
-                        _grad_kemeny,
-                        phys_proj,
-                        alpha_phys, n_iter_phys, tol_phys,
-                    )
+                    try:
+                        Q_opt, hist, n_iters_phys = projected_gradient_descent(
+                            Q0,
+                            _grad_kemeny,
+                            phys_proj,
+                            alpha_phys, n_iter_phys, tol_phys,
+                        )
+                    except (np.linalg.LinAlgError, RuntimeError) as e:
+                        # A PGD iterate became numerically degenerate (e.g. some
+                        # pi_bar entry collapsed toward the epsilon floor, making
+                        # the adjoint solve in _grad_kemeny singular, or the OSQP
+                        # projection failed to converge). Skip this random init;
+                        # if every init in this batch fails, kemeny_phys stays
+                        # np.inf > 100 and the outer while loop above resamples
+                        # pi_bar instead of crashing.
+                        print(f"  physical PGD init failed ({e}); skipping", flush=True)
+                        continue
                     if hist and hist[-1] < kemeny_phys:
                         kemeny_phys = hist[-1]
                         best_Q_bar = Q_opt
@@ -313,7 +376,8 @@ def fig_erdos_renyi_kemeny_improvement(
             # ------------------------------------------------------------------
             # 2. Build degree lifting and optimise lifted Kemeny constant
             # ------------------------------------------------------------------
-            V = degree_lifting(A)
+            A_off = A - np.diag(np.diag(A))
+            V = degree_lifting(A, budget=int(np.maximum(A_off.sum(1), A_off.sum(0)).sum()))
             A_lift = V @ (best_Q_bar > eps).astype(int) @ V.T
 
             best_Q_lift: np.ndarray | None = None
@@ -325,12 +389,20 @@ def fig_erdos_renyi_kemeny_improvement(
                 Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
                 Q0_lift = lift_proj(Q0_lift)
 
-                Q_lift_opt, hist_lift, n_iters_lift = projected_gradient_descent(
-                    Q0_lift,
-                    lambda Q, _V=V, _pi=pi_bar: _grad_lifted_kemeny(Q, _V, _pi),
-                    lift_proj,
-                    alpha_lift, n_iter_lift, tol_lift,
-                )
+                try:
+                    Q_lift_opt, hist_lift, n_iters_lift = projected_gradient_descent(
+                        Q0_lift,
+                        lambda Q, _V=V, _pi=pi_bar: _grad_lifted_kemeny(Q, _V, _pi),
+                        lift_proj,
+                        alpha_lift, n_iter_lift, tol_lift,
+                    )
+                except (np.linalg.LinAlgError, RuntimeError) as e:
+                    # Same rationale as the physical-space guard above. If every
+                    # lifted init fails, kemeny_lift stays np.inf, best_Q_lift
+                    # stays None, and the diff < 0 branch below already falls
+                    # back to the identity lifting of Q_bar rather than crash.
+                    print(f"  lifted PGD init failed ({e}); skipping", flush=True)
+                    continue
                 if hist_lift and hist_lift[-1] < kemeny_lift:
                     kemeny_lift = hist_lift[-1]
                     best_Q_lift = Q_lift_opt
@@ -502,7 +574,8 @@ def fig_erdos_renyi_stackelberg_improvement(
             # ------------------------------------------------------------------
             # 2. Build degree lifting and maximise lifted Stackelberg metric J^lift
             # ------------------------------------------------------------------
-            V = degree_lifting(A)
+            A_off = A - np.diag(np.diag(A))
+            V = degree_lifting(A, budget=int(np.maximum(A_off.sum(1), A_off.sum(0)).sum()))
             A_lift = V @ (best_Q_bar > eps).astype(int) @ V.T
 
             best_Q_lift: np.ndarray | None = None
@@ -652,7 +725,8 @@ def fig_erdos_renyi_rte_improvement(
         iters_lift_p: list[int] = []
         V_p: list[np.ndarray] = []
         while len(diffs_p) < n_graphs:
-            A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
+            # A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
+            A = erdos_renyi_digraph(m, p, seed=int(rng.integers(1 << 31)))
 
             # ensure the physical optimum carries a meaningful (non-negligible) entropy signal
             best_Q_bar: np.ndarray | None = None
@@ -692,7 +766,8 @@ def fig_erdos_renyi_rte_improvement(
             # ------------------------------------------------------------------
             # 2. Build degree lifting and maximise lifted RTE metric H^lift
             # ------------------------------------------------------------------
-            V = degree_lifting(A)
+            A_off = A - np.diag(np.diag(A))
+            V = degree_lifting(A, budget=int(np.maximum(A_off.sum(1), A_off.sum(0)).sum()))
             A_lift = V @ (best_Q_bar > eps).astype(int) @ V.T
 
             best_Q_lift: np.ndarray | None = None
@@ -773,11 +848,11 @@ def fig_san_francisco_kemeny_improvement(
     n_trials: int = 10,
     n_init: int = 3,
     n_iter_phys: int = 150,
-    alpha_phys: float = 2e-3,
-    tol_phys: float = 1e-5,
+    alpha_phys: float = 1e-3,
+    tol_phys: float = 1e-6,
     n_iter_lift: int = 150,
-    alpha_lift: float = 2e-3,
-    tol_lift: float = 1e-5,
+    alpha_lift: float = 1e-3,
+    tol_lift: float = 1e-6,
     eps: float = 1e-6,
     seed: int = 42,
 ) -> None:
@@ -798,7 +873,8 @@ def fig_san_francisco_kemeny_improvement(
     """
     A, W, pi_bar = san_francisco_graph()
     A = prune_long_edges(A, W, threshold=w_max)
-    V = degree_lifting(A)
+    A_off = A - np.diag(np.diag(A))
+    V = degree_lifting(A, budget=int(np.maximum(A_off.sum(1), A_off.sum(0)).sum()))
     print(f"San Francisco graph: {A.shape[0]} nodes, {A.sum()} edges, {V.shape[0]} lifted states", flush=True)
     W_lift = V @ W @ V.T
 
@@ -835,20 +911,39 @@ def fig_san_francisco_kemeny_improvement(
         kemeny_lift = np.inf
         best_n_iters_lift = 0
         lift_proj = make_project_Q(best_Q_bar, V)
-        for _ in range(n_init):
+        n_succeeded = 0
+        n_attempts = 0
+        max_attempts = 4 * n_init
+        while n_succeeded < n_init and n_attempts < max_attempts:
+            n_attempts += 1
             Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
             Q0_lift = lift_proj(Q0_lift)
 
-            Q_lift_opt, hist_lift, n_iters_lift = projected_gradient_descent(
-                Q0_lift,
-                lambda Q, _V=V, _pi=pi_bar, _W=W_lift: _grad_lifted_kemeny(Q, _V, _pi, _W),
-                lift_proj,
-                alpha_lift, n_iter_lift, tol_lift,
-            )
+            try:
+                Q_lift_opt, hist_lift, n_iters_lift = projected_gradient_descent(
+                    Q0_lift,
+                    lambda Q, _V=V, _pi=pi_bar, _W=W_lift: _grad_lifted_kemeny(Q, _V, _pi, _W),
+                    lift_proj,
+                    alpha_lift, n_iter_lift, tol_lift,
+                )
+            except np.linalg.LinAlgError:
+                # PGD can occasionally drive a degree_lifting virtual state's
+                # stationary probability so close to zero that the linear solves
+                # inside _grad_lifted_kemeny go numerically singular. Discard
+                # this restart and draw a fresh random init rather than biasing
+                # the optimizer away from that (potentially near-optimal) region.
+                continue
+            n_succeeded += 1
             if hist_lift and hist_lift[-1] < kemeny_lift:
                 kemeny_lift = hist_lift[-1]
                 best_Q_lift = Q_lift_opt
                 best_n_iters_lift = n_iters_lift
+
+        if best_Q_lift is None:
+            raise RuntimeError(
+                f"trial {t+1}/{n_trials}: all {n_attempts} lifted PGD restarts hit a "
+                "singular linear system before any converged"
+            )
 
         diff = kemeny_phys - kemeny_lift
         if kemeny_phys > 0 and kemeny_lift > 0:
@@ -928,7 +1023,8 @@ def fig_san_francisco_stackelberg_improvement(
     """
     A, W, _ = san_francisco_graph()
     A = prune_long_edges(A, W, threshold=w_max)
-    V = degree_lifting(A)
+    A_off = A - np.diag(np.diag(A))
+    V = degree_lifting(A, budget=int(np.maximum(A_off.sum(1), A_off.sum(0)).sum()))
     print(f"San Francisco graph: {A.shape[0]} nodes, {A.sum()} edges, {V.shape[0]} lifted states", flush=True)
     W_lift = V @ W @ V.T
 
@@ -1022,6 +1118,155 @@ def fig_san_francisco_stackelberg_improvement(
             allow_pickle=True)  # type: ignore[arg-type]
 
 
+def fig_lifting_budget_sweep(
+    m: int,
+    p: float,
+    concentration: float = 5.0,
+    budget_values=None,
+    n_init: int = 3,
+    n_iter_phys: int = 150,
+    alpha_phys: float = 1e-3,
+    tol_phys: float = 1e-6,
+    n_iter_lift: int = 150,
+    alpha_lift: float = 1e-3,
+    tol_lift: float = 1e-6,
+    eps: float = 1e-6,
+    seed: int = 42,
+    save_path: str = 'lifting_budget_sweep.npy',
+) -> None:
+    """Compare five lifting-budget allocation heuristics across a budget sweep.
+
+    For a single random Erdős-Rényi digraph D(m, p) with a random target
+    stationary distribution pi_bar ~ Dirichlet(concentration * 1_m) (as opposed
+    to the many-graph ridgeline sweeps such as fig_erdos_renyi_kemeny_improvement),
+    this:
+      1. Optimises the Kemeny constant in the physical space via PGD
+         (n_init starts), once, giving a shared baseline K(P_bar*) and best_Q_bar
+         reused across every budget/method combination below.
+      2. For each budget in budget_values and each of five lifting heuristics
+         (uniform, stationary, betweenness, eigenvector, reversible_flow — see
+         graph.proportional_lifting and its callers), builds the corresponding
+         V of shape (budget, m) and optimises the lifted Kemeny constant
+         via PGD (n_init starts).
+      3. Records K(P_bar*) - K^lift(P*) for every (budget, method) pair.
+    The reversible_flow method requires best_Q_bar (weights x_i = sum_j
+    min(q_bar_ij, q_bar_ji)) and so is built freshly per call using the shared
+    physical optimum, unlike the other four which only depend on A / pi_bar.
+    budget_values defaults to multiples of m from m (the minimum valid budget,
+    one virtual state per node, i.e. no lifting) to 4m. Results (including the
+    graph A, pi_bar, and the raw V and Q_lift for every combination) are saved
+    to save_path so the comparison plot can be re-rendered without re-running
+    optimization.
+    """
+    if budget_values is None:
+        budget_values = np.arange(m, 4 * m + 1, m)
+
+    rng = np.random.default_rng(seed)
+
+    A = erdos_renyi_digraph(m, p, seed=int(rng.integers(1 << 31)))
+    pi_bar = rng.dirichlet(concentration * np.ones(m))
+
+    # ------------------------------------------------------------------
+    # 1. Optimise the physical Kemeny constant once; shared across every
+    #    budget and lifting method compared below.
+    # ------------------------------------------------------------------
+    phys_proj = make_project_Q_bar(A, pi_bar)
+
+    best_Q_bar: np.ndarray | None = None
+    kemeny_phys = np.inf
+    for _ in range(n_init):
+        Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
+        Q0 = phys_proj(Q0)
+        Q_opt, hist, _ = projected_gradient_descent(
+            Q0,
+            _grad_kemeny,
+            phys_proj,
+            alpha_phys, n_iter_phys, tol_phys,
+        )
+        if hist and hist[-1] < kemeny_phys:
+            kemeny_phys = hist[-1]
+            best_Q_bar = Q_opt
+    print(f"Physical Kemeny optimum: K(P_bar*) = {kemeny_phys:.4f}", flush=True)
+
+    lifting_methods = {
+        'uniform': lambda budget: uniform_lifting(A, budget),
+        'stationary': lambda budget: stationary_lifting(pi_bar, budget),
+        'betweenness': lambda budget: betweenness_lifting(A, budget),
+        'eigenvector': lambda budget: eigenvector_lifting(A, budget),
+        'reversible_flow': lambda budget: reversible_flow_lifting(best_Q_bar, budget),
+    }
+
+    results = {
+        name: {'budgets': [], 'diffs': [], 'kemeny_lift': [], 'V': [], 'Q_lift': [], 'iters_lift': []}
+        for name in lifting_methods
+    }
+
+    for budget in budget_values:
+        budget = int(budget)
+        for name, make_V in lifting_methods.items():
+            V = make_V(budget)
+            A_lift = V @ (best_Q_bar > eps).astype(int) @ V.T
+            lift_proj = make_project_Q(best_Q_bar, V)
+
+            best_Q_lift: np.ndarray | None = None
+            kemeny_lift = np.inf
+            best_n_iters_lift = 0
+            n_succeeded = 0
+            n_attempts = 0
+            max_attempts = 4 * n_init
+            while n_succeeded < n_init and n_attempts < max_attempts:
+                n_attempts += 1
+                Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
+                Q0_lift = lift_proj(Q0_lift)
+                try:
+                    Q_lift_opt, hist_lift, n_iters_lift = projected_gradient_descent(
+                        Q0_lift,
+                        lambda Q, _V=V, _pi=pi_bar: _grad_lifted_kemeny(Q, _V, _pi),
+                        lift_proj,
+                        alpha_lift, n_iter_lift, tol_lift,
+                    )
+                except np.linalg.LinAlgError:
+                    # As in fig_san_francisco_kemeny_improvement: PGD can occasionally
+                    # drive a virtual state's stationary probability to zero, making the
+                    # adjoint solve in _grad_lifted_kemeny singular. Discard and retry.
+                    continue
+                n_succeeded += 1
+                if hist_lift and hist_lift[-1] < kemeny_lift:
+                    kemeny_lift = hist_lift[-1]
+                    best_Q_lift = Q_lift_opt
+                    best_n_iters_lift = n_iters_lift
+
+            if best_Q_lift is None:
+                print(f"budget={budget}, method={name}: all {n_attempts} lifted PGD restarts hit a singular linear system; skipping", flush=True)
+                continue
+
+            diff = kemeny_phys - kemeny_lift
+            print(
+                f"budget={budget}, method={name}: K^lift(P*)={kemeny_lift:.4f}, diff={diff:.4f}",
+                flush=True,
+            )
+            results[name]['budgets'].append(budget)
+            results[name]['diffs'].append(diff)
+            results[name]['kemeny_lift'].append(kemeny_lift)
+            results[name]['V'].append(V)
+            results[name]['Q_lift'].append(best_Q_lift)
+            results[name]['iters_lift'].append(best_n_iters_lift)
+
+        best_name = max(
+            (name for name in lifting_methods if results[name]['budgets'] and results[name]['budgets'][-1] == budget),
+            key=lambda name: results[name]['diffs'][-1],
+            default=None,
+        )
+        if best_name is not None:
+            print(f"budget={budget}: best method = {best_name} (diff={results[best_name]['diffs'][-1]:.4f})\n", flush=True)
+
+    # Save raw data so the comparison plot can be re-rendered without re-running optimization
+    np.save(save_path,
+            {'A': A, 'pi_bar': pi_bar, 'budget_values': np.array(budget_values),
+             'kemeny_phys': kemeny_phys, 'Q_bar': best_Q_bar, 'results': results},
+            allow_pickle=True)  # type: ignore[arg-type]
+
+
 if __name__ == "__main__":
     # pass
 
@@ -1030,7 +1275,7 @@ if __name__ == "__main__":
     # fig3()
     # fig4()
 
-    # # This took 17 hrs!
+    # # This took 1 hr
     # _t0 = time.time()
     # fig_erdos_renyi_kemeny_improvement(
     #     m=10,
@@ -1047,53 +1292,54 @@ if __name__ == "__main__":
     # )
     # print(f"E-R Kemeny elapsed: {time.time() - _t0:.1f}s")
 
-    # This took 10 hrs
-    _t0 = time.time()
-    fig_erdos_renyi_stackelberg_improvement(
-        m=10,
-        p_values=np.linspace(0.2, 0.8, 7),
-        n_graphs=20,
-        n_init=5,
-        n_iter_phys=250,
-        alpha_phys=1.0,
-        tol_phys=1e-5,
-        n_iter_lift=250,
-        alpha_lift=0.1,
-        tol_lift=1e-6,
-        seed=42,
-    )
-    print(f"E-R Stackelberg elapsed: {time.time() - _t0:.1f}s")
+    # # This took 10 hrs
+    # _t0 = time.time()
+    # fig_erdos_renyi_stackelberg_improvement(
+    #     m=10,
+    #     p_values=np.linspace(0.2, 0.8, 7),
+    #     n_graphs=20,
+    #     n_init=5,
+    #     n_iter_phys=250,
+    #     alpha_phys=1.0,
+    #     tol_phys=1e-5,
+    #     n_iter_lift=250,
+    #     alpha_lift=0.1,
+    #     tol_lift=1e-6,
+    #     seed=42,
+    # )
+    # print(f"E-R Stackelberg elapsed: {time.time() - _t0:.1f}s")
 
+    # # This took 5 hrs
     # _t0 = time.time()
     # fig_erdos_renyi_rte_improvement(
     #     m=10,
-    #     p_values=np.linspace(0.2, 0.8, 2),
-    #     n_graphs=2,
-    #     n_init=1,
+    #     p_values=np.linspace(0.2, 0.8, 7),
+    #     n_graphs=20,
+    #     n_init=5,
     #     n_iter_phys=200,
     #     alpha_phys=1e-2,
     #     tol_phys=1e-6,
     #     n_iter_lift=200,
     #     alpha_lift=1e-3,
     #     tol_lift=1e-6,
-    #     eta=0.25,
+    #     eta=0.1,
     #     seed=42,
     # )
     # print(f"E-R RTE elapsed: {time.time() - _t0:.1f}s")
 
-    # # This took 45 mins
+    # # This took ? mins
     # _t0 = time.time()
     # fig_san_francisco_kemeny_improvement(
-    #     w_max=4,
-    #     n_trials=5,
-    #     n_init=1,
-    #     n_iter_phys=200,
-    #     alpha_phys=1e-4,
-    #     tol_phys=1e-3,
-    #     n_iter_lift=200,
-    #     alpha_lift=5e-5,
-    #     tol_lift=1e-3,
-    #     seed=42,
+    #     w_max=6,
+    #     n_trials=20,
+    #     n_init=5,
+    #     n_iter_phys=100,
+    #     alpha_phys=1e-3,
+    #     tol_phys=1e-6,
+    #     n_iter_lift=100,
+    #     alpha_lift=1e-3,
+    #     tol_lift=1e-6,
+    #     seed=43,
     # )
     # print(f"SF Kemeny elapsed: {time.time() - _t0:.1f}s")
 
@@ -1113,3 +1359,21 @@ if __name__ == "__main__":
     #     seed=42,
     # )
     # print(f"SF Stackelberg elapsed: {time.time() - _t0:.1f}s")
+
+    # This took ? mins
+    _t0 = time.time()
+    m = 10
+    fig_lifting_budget_sweep(
+        m=m,
+        p=0.5,
+        budget_values = np.arange(2 * m, 6 * m + 1, m),
+        n_init=5,
+        n_iter_phys=100,
+        alpha_phys=1e-3,
+        tol_phys=1e-6,
+        n_iter_lift=100,
+        alpha_lift=1e-3,
+        tol_lift=1e-6,
+        seed=42,
+    )
+    print(f"Lifting budget sweep elapsed: {time.time() - _t0:.1f}s")

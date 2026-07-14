@@ -3,16 +3,23 @@ import numpy as np
 from markov import _check_stochastic, _check_mapping, stationary_distribution
 
 
-def kemeny(Pbar: np.ndarray, W: np.ndarray | None = None) -> float:
+def kemeny(Pbar: np.ndarray, W: np.ndarray | None = None, pi: np.ndarray | None = None) -> float:
     """Compute the Kemeny constant.
 
     W is the edge weight matrix; if None, all weights default to 1.
+    pi is Pbar's stationary distribution; if None, it is solved for via
+    stationary_distribution(Pbar). Pass pi explicitly when it is already known from
+    an ergodic flow matrix Q (pi = Q.sum(axis=1)) rather than re-derived from Pbar:
+    that solve is a fresh linear system and can be ill-conditioned for chains with
+    very small transition probabilities, even when Q's row sum is exact by
+    construction (e.g. from a projected-gradient-descent optimizer).
     """
     _check_stochastic(Pbar)
     n = Pbar.shape[0]
     if W is None:
         W = np.ones((n, n))
-    pi = stationary_distribution(Pbar)
+    if pi is None:
+        pi = stationary_distribution(Pbar)
     rhs = (Pbar * W) @ np.ones(n)
     M = np.zeros((n, n))
     for j in range(n):
@@ -22,18 +29,23 @@ def kemeny(Pbar: np.ndarray, W: np.ndarray | None = None) -> float:
     return float(pi @ M @ pi)
 
 
-def lifted_kemeny(P: np.ndarray, V: np.ndarray, W: np.ndarray | None = None) -> float:
+def lifted_kemeny(
+    P: np.ndarray, V: np.ndarray, W: np.ndarray | None = None, pi: np.ndarray | None = None
+) -> float:
     """Compute the lifted Kemeny constant.
 
     V is the n x m mapping matrix whose j-th column indicates which virtual states
     belong to physical node j. W is the edge weight matrix; if None, all weights default to 1.
+    pi is P's stationary distribution; if None it is solved for (see kemeny's docstring
+    for why passing a known pi, e.g. from an ergodic flow's row sum, is preferable).
     """
     _check_stochastic(P)
     _check_mapping(V, n=P.shape[0])
     n, m = V.shape
     if W is None:
         W = np.ones((n, n))
-    pi = stationary_distribution(P)
+    if pi is None:
+        pi = stationary_distribution(P)
     rhs = (P * W) @ np.ones(n)
     M_lift = np.zeros((n, m))
     for j in range(m):
@@ -132,17 +144,24 @@ def lifted_stackelberg(P: np.ndarray, V: np.ndarray, tau: np.ndarray, W: np.ndar
     return float(J_lift.min())
 
 
-def return_time_entropy(P: np.ndarray, eta: float = 0.01, W: np.ndarray | None = None) -> float:
+def return_time_entropy(
+    P: np.ndarray, eta: float = 0.01, W: np.ndarray | None = None, pi: np.ndarray | None = None
+) -> float:
     """Compute the truncated Return-Time Entropy.
 
     K_eta = ceil(1 / (eta * pi_min)) - 1 controls truncation; eta upper-bounds discarded probability.
     W is the edge travel-time matrix (in N); if None, all travel times default to 1.
+    pi is P's stationary distribution; if None it is solved for (see kemeny's docstring
+    for why passing a known pi, e.g. from an ergodic flow's row sum, is preferable —
+    K_eta is especially sensitive to pi.min(), so an ill-conditioned solve here can
+    blow up the truncation length).
     """
     _check_stochastic(P)
     n = P.shape[0]
     if W is None:
         W = np.ones((n, n), dtype=int)
-    pi = stationary_distribution(P)
+    if pi is None:
+        pi = stationary_distribution(P)
     K_eta = int(np.ceil(1.0 / (eta * pi.min()))) - 1
     F = _first_passage_matrices(P, np.eye(n), W, K_eta)
     H = 0.0
@@ -154,20 +173,26 @@ def return_time_entropy(P: np.ndarray, eta: float = 0.01, W: np.ndarray | None =
 
 
 def lifted_return_time_entropy(
-    P: np.ndarray, V: np.ndarray, eta: float = 0.01, W: np.ndarray | None = None
+    P: np.ndarray, V: np.ndarray, eta: float = 0.01, W: np.ndarray | None = None,
+    pi: np.ndarray | None = None,
 ) -> float:
     """Compute the truncated lifted Return-Time Entropy.
 
     H^lift(P) = -sum_j pi_bar_j * sum_{k=1}^{K_eta} R_k(j) log R_k(j),
     where K_eta = ceil(1 / (eta * pi_bar_min)) - 1.
     W is the edge travel-time matrix (in N); if None, all travel times default to 1.
+    pi is P's stationary distribution; if None it is solved for (see kemeny's docstring
+    for why passing a known pi, e.g. from an ergodic flow's row sum, is preferable —
+    K_eta is especially sensitive to pi_bar.min(), so an ill-conditioned solve here can
+    blow up the truncation length).
     """
     _check_stochastic(P)
     _check_mapping(V, n=P.shape[0])
     n = P.shape[0]
     if W is None:
         W = np.ones((n, n), dtype=int)
-    pi = stationary_distribution(P)
+    if pi is None:
+        pi = stationary_distribution(P)
     pi_bar = V.T @ pi
     K_eta = int(np.ceil(1.0 / (eta * pi_bar.min()))) - 1
     F_lift = _first_passage_matrices(P, V, W, K_eta)

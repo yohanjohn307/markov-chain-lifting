@@ -1,3 +1,4 @@
+import networkx as nx
 import numpy as np
 
 
@@ -62,22 +63,141 @@ def random_chain(A: np.ndarray, seed: int | None = None) -> np.ndarray:
     return U + U.T
 
 
-def degree_lifting(A: np.ndarray) -> np.ndarray:
-    """Build the degree-lifting mapping matrix for a graph.
-
-    Node j gets deg(j) virtual states (one per incident edge), giving n = 2|E| total.
-    Virtual states are ordered by physical node: the first deg(0) rows map to node 0, etc.
-    Returns V: (n, m) binary mapping matrix with exactly one 1 per row.
-    """
-    deg = (A - np.diag(np.diag(A))).sum(axis=1).astype(int)
+def _lifting(deg: np.ndarray) -> np.ndarray:
     n = int(deg.sum())
-    m = A.shape[0]
+    m = deg.shape[0]
     V = np.zeros((n, m), dtype=float)
     idx = 0
     for j, d in enumerate(deg):
         V[idx:idx + d, j] = 1.0
         idx += d
     return V
+
+
+def outdegree_lifting(A: np.ndarray) -> np.ndarray:
+    """Build the outdegree-lifting mapping matrix for a graph.
+
+    Node j gets outdeg(j) virtual states (one per outgoing edge), giving n = |E| total.
+    Virtual states are ordered by physical node: the first outdeg(0) rows map to node 0, etc.
+    Returns V: (n, m) binary mapping matrix with exactly one 1 per row.
+    """
+    outdeg = (A - np.diag(np.diag(A))).sum(axis=1).astype(int)
+    return _lifting(outdeg)
+
+
+def indegree_lifting(A: np.ndarray) -> np.ndarray:
+    """Build the indegree-lifting mapping matrix for a graph.
+
+    Node j gets indeg(j) virtual states (one per incoming edge), giving n = |E| total.
+    Virtual states are ordered by physical node: the first indeg(0) rows map to node 0, etc.
+    Returns V: (n, m) binary mapping matrix with exactly one 1 per row.
+    """
+    indeg = (A - np.diag(np.diag(A))).sum(axis=0).astype(int)
+    return _lifting(indeg)
+
+
+def proportional_lifting(weights: np.ndarray, budget: int) -> np.ndarray:
+    """Build a lifting mapping matrix with virtual-state counts proportional to weights.
+
+    Each of the m physical nodes gets at least one virtual state, and the
+    remaining budget - m states are apportioned across nodes proportional to
+    weights using the largest-remainder (Hamilton) method, so counts sum
+    exactly to budget.
+    Returns V: (budget, m) binary mapping matrix with exactly one 1 per row.
+    """
+    weights = np.asarray(weights, dtype=float)
+    m = weights.shape[0]
+    if budget < m:
+        raise ValueError(f"budget ({budget}) must be at least the number of nodes ({m})")
+    remaining = budget - m
+    if weights.sum() > 0:
+        shares = remaining * weights / weights.sum()
+    else:
+        shares = np.full(m, remaining / m)
+    extra = np.floor(shares).astype(int)
+    leftover = remaining - int(extra.sum())
+    frac = shares - extra
+    order = np.argsort(-frac)
+    extra[order[:leftover]] += 1
+    counts = np.ones(m, dtype=int) + extra
+    return _lifting(counts)
+
+
+def uniform_lifting(A: np.ndarray, budget: int) -> np.ndarray:
+    """Build a lifting mapping matrix that splits virtual states evenly across nodes.
+
+    Uses proportional_lifting with a vector of ones, i.e. weights are uniform.
+    Returns V: (budget, m) binary mapping matrix with exactly one 1 per row.
+    """
+    m = A.shape[0]
+    return proportional_lifting(np.ones(m), budget)
+
+
+def stationary_lifting(pi_bar: np.ndarray, budget: int) -> np.ndarray:
+    """Build a lifting mapping matrix proportional to the desired stationary distribution.
+
+    Uses proportional_lifting with weights x_i = pi_bar_i, so nodes with higher
+    stationary probability (visited more often) get more virtual states.
+    Returns V: (budget, m) binary mapping matrix with exactly one 1 per row.
+    """
+    return proportional_lifting(pi_bar, budget)
+
+
+def degree_lifting(A: np.ndarray, budget: int) -> np.ndarray:
+    """Build a lifting mapping matrix proportional to node max(indegree, outdegree).
+
+    Uses proportional_lifting with weights x_i = max(indeg(i), outdeg(i)), so
+    nodes with more incident edges (in either direction) get more virtual
+    states.
+    Returns V: (budget, m) binary mapping matrix with exactly one 1 per row.
+    """
+    A_off = A - np.diag(np.diag(A))
+    outdeg = A_off.sum(axis=1)
+    indeg = A_off.sum(axis=0)
+    weights = np.maximum(indeg, outdeg)
+    return proportional_lifting(weights, budget)
+
+
+def betweenness_lifting(A: np.ndarray, budget: int) -> np.ndarray:
+    """Build a lifting mapping matrix proportional to node betweenness centrality.
+
+    Uses proportional_lifting with weights x_i equal to the (directed) betweenness
+    centrality of node i, so nodes lying on more shortest paths get more virtual
+    states.
+    Returns V: (budget, m) binary mapping matrix with exactly one 1 per row.
+    """
+    m = A.shape[0]
+    G = nx.from_numpy_array(A - np.diag(np.diag(A)), create_using=nx.DiGraph)
+    bc = nx.betweenness_centrality(G)
+    weights = np.array([bc[i] for i in range(m)])
+    return proportional_lifting(weights, budget)
+
+
+def eigenvector_lifting(A: np.ndarray, budget: int) -> np.ndarray:
+    """Build a lifting mapping matrix proportional to node eigenvector centrality.
+
+    Uses proportional_lifting with weights x_i equal to the (directed) eigenvector
+    centrality of node i, so nodes connected to other well-connected nodes get
+    more virtual states.
+    Returns V: (budget, m) binary mapping matrix with exactly one 1 per row.
+    """
+    m = A.shape[0]
+    G = nx.from_numpy_array(A - np.diag(np.diag(A)), create_using=nx.DiGraph)
+    ec = nx.eigenvector_centrality(G, max_iter=1000)
+    weights = np.array([ec[i] for i in range(m)])
+    return proportional_lifting(weights, budget)
+
+
+def reversible_flow_lifting(Q_bar: np.ndarray, budget: int) -> np.ndarray:
+    """Build a lifting mapping matrix proportional to each node's reversible flow.
+
+    Uses proportional_lifting with weights x_i = sum_j min(q_bar_ij, q_bar_ji), the
+    portion of node i's ergodic flow that is balanced (back-and-forth) with its
+    neighbors, so nodes with more reversible traffic get more virtual states.
+    Returns V: (budget, m) binary mapping matrix with exactly one 1 per row.
+    """
+    weights = np.minimum(Q_bar, Q_bar.T).sum(axis=1)
+    return proportional_lifting(weights, budget)
 
 
 def prune_long_edges(A: np.ndarray, W: np.ndarray, threshold: float) -> np.ndarray:
