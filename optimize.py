@@ -4,18 +4,17 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import logsumexp
 
-from markov import _check_mapping, _check_ergodic_flow, EQUALITY_ATOL
+from markov import _check_mapping, _check_ergodic_flow, EQUALITY_ATOL, SUPPORT_ATOL
 
 
 _SOLVER_TOL = EQUALITY_ATOL * 1e-2
-_OK_STATUSES = {cp.OPTIMAL, cp.OPTIMAL_INACCURATE}
 _DEFAULT_MAX_ITER = 10_000
 
 
 def _solve_projection(prob: cp.Problem, warm_start: bool, max_iter: int = _DEFAULT_MAX_ITER) -> None:
     """Solve a projection QP, falling back to a cold start if warm-started OSQP stalls."""
     prob.solve(solver=cp.OSQP, warm_start=warm_start, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL, max_iter=max_iter)
-    if warm_start and prob.status not in _OK_STATUSES:
+    if warm_start and prob.status != cp.OPTIMAL:
         prob.solve(solver=cp.OSQP, warm_start=False, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL, max_iter=max_iter)
 
 
@@ -38,7 +37,7 @@ def make_project_Q(
     _check_ergodic_flow(Q_bar, m=V.shape[1])
     _check_mapping(V)
     n = V.shape[0]
-    Q_bar_ceil = (Q_bar > 1e-6).astype(int) # hardcoded to catch Stackelberg case where epsilon = 0
+    Q_bar_ceil = (Q_bar > SUPPORT_ATOL).astype(int) # hardcoded to catch Stackelberg case where epsilon = 0
     U = V @ Q_bar_ceil @ V.T
     Q_tilde_p = cp.Parameter((n, n))
     Q = cp.Variable((n, n))
@@ -60,7 +59,7 @@ def make_project_Q(
     def project(Q_tilde: np.ndarray) -> np.ndarray:
         Q_tilde_p.value = Q_tilde
         _solve_projection(prob, warm_start=True, max_iter=max_iter)
-        if Q.value is None or prob.status not in _OK_STATUSES:
+        if Q.value is None or prob.status != cp.OPTIMAL:
             raise RuntimeError(f"project_Q: QP did not converge (status={prob.status}); check that Q_bar is a valid ergodic flow for V")
         return _clip_to_support(Q.value, U, epsilon)
 
@@ -93,7 +92,7 @@ def make_project_Q_bar(
     def project(Q_tilde: np.ndarray) -> np.ndarray:
         Q_tilde_p.value = Q_tilde
         _solve_projection(prob, warm_start=True, max_iter=max_iter)
-        if Q.value is None or prob.status not in _OK_STATUSES:
+        if Q.value is None or prob.status != cp.OPTIMAL:
             raise RuntimeError(f"project_Q_bar: QP did not converge (status={prob.status}); check inputs are consistent")
         return _clip_to_support(Q.value, A, epsilon)
 
@@ -172,69 +171,6 @@ def _lifted_first_passage_history(P: np.ndarray, V: np.ndarray, W: np.ndarray, K
             Fk = Fk + P_w[w - 1] @ (F_prev - F_prev * V)
         F_hist.append(Fk)
     return F_hist
-
-
-# def _stackelberg_Q(Q: np.ndarray, V: np.ndarray, tau: np.ndarray, W: np.ndarray, lse_temp: float):
-#     """JAX-traced lifted Stackelberg metric as a function of ergodic flow Q.
-
-#     The true metric is min(Psi_lift), but jnp.min is flat (zero gradient) almost
-#     everywhere and only subgradient-informative at the (possibly non-unique) argmin.
-#     We instead use the softmin -lse_temp * logsumexp(-Psi_lift / lse_temp), which is smooth
-#     and gives every entry a gradient weighted by its closeness to the minimum.
-#     As lse_temp -> 0, softmin(Psi_lift) -> min(Psi_lift) (it is always a lower bound,
-#     with gap <= lse_temp * log(n * m)).
-
-#     W is the edge travel-time matrix (Eq. 38); W = 1 recovers the unweighted
-#     recursion (Eq. 43).
-#     """
-#     pi = Q.sum(axis=1)
-#     P = Q / pi[:, None]
-#     n, m = V.shape
-#     tau_max = int(tau.max())
-#     F_hist = _lifted_first_passage_history(P, V, W, tau_max)
-#     Psi_lift = jnp.zeros((n, m))
-#     for k in range(1, tau_max + 1):
-#         col_mask = jnp.array(tau >= k)[None, :].astype(Q.dtype)
-#         Psi_lift = Psi_lift + F_hist[k] * col_mask
-#     return -lse_temp * logsumexp(-Psi_lift.reshape(-1) / lse_temp)
-
-
-
-# def make_grad_stackelberg(tau: np.ndarray, V: np.ndarray | None = None, W: np.ndarray | None = None):
-#     """Return a JIT-compiled gradient function for the (softmin) lifted Stackelberg metric w.r.t. Q.
-
-#     The returned grad_fn(Q, lse_temp) takes lse_temp as a traced argument rather than a
-#     Python constant baked in at trace time, so it can be annealed across PGD
-#     iterations (e.g. via projected_gradient_descent's temp_schedule) without
-#     triggering recompilation: smaller lse_temp tracks the true min(Psi_lift) more
-#     closely but concentrates gradients on the near-minimal entries; larger lse_temp
-#     gives smoother, more informative gradients early in optimization at the cost
-#     of a looser approximation to the true metric.
-#     V is the n x m mapping matrix (Sec. II-C); if None, defaults to the identity
-#     (no lifting), recovering the gradient of the standard (non-lifted) Stackelberg
-#     metric J (Eq. 39).
-#     W is the lifted edge travel-time matrix (Sec. VII, Eq. 38); entries are positive
-#     integers giving the number of time steps to traverse each edge, and only entries
-#     where the corresponding edge exists are used. If None, all edges default to unit
-#     travel time, recovering the unweighted recursion (Eq. 43).
-#     Call once before the optimization loop; the returned callable reuses the compiled
-#     kernel on every iteration without retracing.
-#     To maximize J^lift, negate the returned function's outputs.
-#     """
-#     tau = np.asarray(tau, dtype=int)
-#     V = np.eye(len(tau)) if V is None else np.asarray(V)
-#     V_j = jnp.array(V)
-#     n = V.shape[0]
-#     W = np.ones((n, n)) if W is None else np.asarray(W)
-#     _compiled = jax.jit(
-#         jax.value_and_grad(lambda Q, lse_temp: _stackelberg_Q(Q, V_j, tau, W, lse_temp), argnums=0)
-#     )
-
-#     def grad_fn(Q: np.ndarray, lse_temp: float) -> tuple[float, np.ndarray]:
-#         val, grad = _compiled(jnp.array(Q), jnp.asarray(lse_temp, dtype=jnp.array(Q).dtype))
-#         return float(val), np.array(grad)
-
-#     return grad_fn
 
 
 def _stackelberg_Q(Q: np.ndarray, V: np.ndarray, tau: np.ndarray, W: np.ndarray, lse_temp: float):

@@ -97,28 +97,6 @@ def stackelberg(P: np.ndarray, tau: np.ndarray, W: np.ndarray | None = None) -> 
     return float(Psi.min())
 
 
-# def lifted_stackelberg(P: np.ndarray, V: np.ndarray, tau: np.ndarray) -> float:
-#     """Compute the lifted Stackelberg game metric.
-
-#     tau[j] is the number of steps the attacker needs to complete an attack at physical node j.
-#     """
-#     _check_stochastic(P)
-#     _check_mapping(V, n=P.shape[0])
-#     n, m = V.shape
-#     tau = np.asarray(tau, dtype=int)
-#     if tau.shape != (m,):
-#         raise ValueError(f"tau must have length m={m}, got shape {tau.shape}")
-#     Psi_lift = np.zeros((n, m))
-#     Fk_lift = P @ V
-#     V_comp  = 1 - V
-#     tau_max = int(tau.max())
-#     for k in range(1, tau_max + 1):
-#         Psi_lift[:, tau >= k] += Fk_lift[:, tau >= k]
-#         if k < tau_max:
-#             Fk_lift = P @ (Fk_lift * V_comp)
-#     return float(Psi_lift.min())
-
-
 def lifted_stackelberg(P: np.ndarray, V: np.ndarray, tau: np.ndarray, W: np.ndarray | None = None) -> float:
     """Compute the lifted Stackelberg game metric.
 
@@ -145,7 +123,7 @@ def lifted_stackelberg(P: np.ndarray, V: np.ndarray, tau: np.ndarray, W: np.ndar
 
 
 def return_time_entropy(
-    P: np.ndarray, eta: float = 0.01, W: np.ndarray | None = None, pi: np.ndarray | None = None
+    P: np.ndarray, eta: float = 0.1, W: np.ndarray | None = None, pi: np.ndarray | None = None
 ) -> float:
     """Compute the truncated Return-Time Entropy.
 
@@ -173,7 +151,7 @@ def return_time_entropy(
 
 
 def lifted_return_time_entropy(
-    P: np.ndarray, V: np.ndarray, eta: float = 0.01, W: np.ndarray | None = None,
+    P: np.ndarray, V: np.ndarray, eta: float = 0.1, W: np.ndarray | None = None,
     pi: np.ndarray | None = None,
 ) -> float:
     """Compute the truncated lifted Return-Time Entropy.

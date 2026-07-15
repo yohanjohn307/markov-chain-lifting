@@ -2,6 +2,9 @@ import numpy as np
 
 
 EQUALITY_ATOL = 1e-3
+# Floor for "is this entry nonzero" / support-mask tests (distinct from
+# EQUALITY_ATOL's row/column-sum equality band).
+SUPPORT_ATOL = 1e-6
 
 
 # ---------------------------------------------------------------------------
