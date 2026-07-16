@@ -12,14 +12,255 @@ from metrics import (
 from graph import degree_lifting, erdos_renyi_graph, erdos_renyi_digraph
 
 plt.rcParams.update({
-    'font.size': 14,
-    'axes.titlesize': 16,
-    'axes.labelsize': 16,
-    'xtick.labelsize': 13,
-    'ytick.labelsize': 13,
-    'legend.fontsize': 13,
-    'legend.title_fontsize': 13,
+    'font.size': 16,
+    'axes.titlesize': 18,
+    'axes.labelsize': 18,
+    'xtick.labelsize': 15,
+    'ytick.labelsize': 15,
+    'legend.fontsize': 15,
+    'legend.title_fontsize': 15,
 })
+
+
+def fig_random_graphs(m: int = 10, p_values=None, seed: int = 42) -> None:
+    """Plot randomly generated Erdős-Rényi graphs G(m, p) with self-loops for several p."""
+    if p_values is None:
+        p_values = [0.2, 0.4, 0.6, 0.8]
+
+    fig, axes = plt.subplots(1, len(p_values), figsize=(6 * len(p_values), 6))
+
+    rng = np.random.default_rng(seed)
+
+    graphs = []
+    for p in p_values:
+        A = erdos_renyi_graph(m, p, seed=seed)
+        G = nx.from_numpy_array(A, create_using=nx.Graph)
+        pi_bar = rng.dirichlet(5 * np.ones(m))
+        pos = nx.spring_layout(G, seed=seed)
+        graphs.append((G, pi_bar, pos))
+
+    vmin = min(pi_bar.min() for _, pi_bar, _ in graphs)
+    vmax = max(pi_bar.max() for _, pi_bar, _ in graphs)
+
+    for ax, p, (G, pi_bar, pos) in zip(axes, p_values, graphs):
+        nx.draw_networkx(G, pos=pos, ax=ax,
+                         node_color=pi_bar, cmap='viridis', vmin=vmin, vmax=vmax,
+                         node_size=700, font_color='white', font_weight='bold')
+        ax.set_title(f'Erdős–Rényi $G({m},\\ {p})$', pad=12)
+
+    sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
+    sm.set_array([])
+    fig.colorbar(sm, ax=axes, orientation='horizontal', fraction=0.05, pad=0.05,
+                 label='Stationary distribution $\\bar\\pi$')
+
+    plt.savefig('random_graphs.pdf', bbox_inches='tight')
+    plt.savefig('random_graphs.png', dpi=150, bbox_inches='tight')
+
+
+def fig_random_digraphs(m: int = 10, p_values=None, seed: int = 42) -> None:
+    """Plot randomly generated Erdős-Rényi digraphs D(m, p) with self-loops for several p."""
+    if p_values is None:
+        p_values = [0.2, 0.4, 0.6, 0.8]
+
+    fig, axes = plt.subplots(1, len(p_values), figsize=(6 * len(p_values), 6))
+
+    rng = np.random.default_rng(seed)
+
+    graphs = []
+    for p in p_values:
+        A = erdos_renyi_digraph(m, p, seed=seed)
+        G = nx.from_numpy_array(A, create_using=nx.DiGraph)
+        pi_bar = rng.dirichlet(5 * np.ones(m))
+        pos = nx.spring_layout(G, seed=seed)
+        graphs.append((G, pi_bar, pos))
+
+    vmin = min(pi_bar.min() for _, pi_bar, _ in graphs)
+    vmax = max(pi_bar.max() for _, pi_bar, _ in graphs)
+
+    for ax, p, (G, pi_bar, pos) in zip(axes, p_values, graphs):
+        nx.draw_networkx(G, pos=pos, ax=ax,
+                         node_color=pi_bar, cmap='viridis', vmin=vmin, vmax=vmax,
+                         node_size=700, font_color='white', font_weight='bold',
+                         arrows=True, arrowstyle='-|>', arrowsize=15,
+                         connectionstyle='arc3,rad=0.1')
+        ax.set_title(f'Erdős–Rényi $D({m},\\ {p})$', pad=12)
+
+    sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
+    sm.set_array([])
+    fig.colorbar(sm, ax=axes, orientation='horizontal', fraction=0.05, pad=0.05,
+                 label='Stationary distribution $\\bar\\pi$')
+
+    plt.savefig('random_digraphs.pdf', bbox_inches='tight')
+    plt.savefig('random_digraphs.png', dpi=150, bbox_inches='tight')
+    
+
+def fig_kemeny_vs_transition_probability() -> None:
+    """Reproduce Fig. 2: Kemeny constant of the lifted MC vs. transition probability p."""
+    pvec = np.linspace(0, 1, 100)
+    kvec = []
+    # compute Kemeny's constant for each value of p
+    for p in pvec:
+        P = np.array([
+            [0,   p,   0,   0,   0,   1-p],
+            [1-p, 0,   p,   0,   0,   0  ],
+            [0,   1-p, 0,   p,   0,   0  ],
+            [0,   0,   1-p, 0,   p,   0  ],
+            [0,   0,   0,   1-p, 0,   p  ],
+            [p,   0,   0,   0,   1-p, 0  ],
+        ])
+        kvec.append(kemeny(P))
+
+    fig, ax = plt.subplots()
+    ax.plot(pvec, kvec)
+    ax.axhline(25/6, linestyle='--', label=r'$K(\bar{P}) = 25/6$')
+    ax.set_xlabel(r'$p$')
+    ax.set_ylabel(r'$K(P)$')
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig('kemeny_vs_p.pdf')
+    plt.savefig('kemeny_vs_p.png', dpi=150, bbox_inches='tight')
+
+
+def fig_estimation_error_vs_trajectory_length(seed: int = 42) -> None:
+    """Reproduce Fig. 3: MLE estimation error vs. trajectory length.
+
+    Proposition 4 guarantees the plug-in estimate of the physical-space MC converges to P_bar,
+    so the error should decay to zero as the trajectory length grows.
+    """
+    rng = np.random.default_rng(seed)
+    p = 0.9
+    P = np.array([
+        [0,   p,   0,   0,   0,   1-p],
+        [1-p, 0,   p,   0,   0,   0  ],
+        [0,   1-p, 0,   p,   0,   0  ],
+        [0,   0,   1-p, 0,   p,   0  ],
+        [0,   0,   0,   1-p, 0,   p  ],
+        [p,   0,   0,   0,   1-p, 0  ],
+    ])
+    # mapping matrix from virtual states to physical states
+    V = np.array([
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1],
+        [0, 0, 1, 0],
+        [0, 1, 0, 0],
+    ])
+    n, m = V.shape
+    virtual_to_physical = V.argmax(axis=1).tolist()
+
+    # collapsed transition matrix
+    pi = stationary_distribution(P)
+    Pbar, _ = collapsing(P, V)
+
+    # simulate the lifted Markov chain
+    x0 = rng.choice(n, p=pi)
+    x = [x0]
+    for _ in range(2000 - 1):
+        x.append(rng.choice(n, p=P[x[-1]]))
+    y = [virtual_to_physical[xi] for xi in x]
+
+    # estimate the underlying Markov chain's transition matrix from the simulated trajectory
+    T = np.arange(10, 2000, 10)
+    estimation_errors = []
+    counts = np.zeros((m, m))
+    prev = 0
+    for t in T:
+        for i in range(prev, t - 1):
+            counts[y[i], y[i + 1]] += 1
+        prev = t - 1
+        row_sums = counts.sum(axis=1, keepdims=True)
+        row_sums[row_sums == 0] = 1  # unvisited rows stay zero after division
+        P_est = counts / row_sums
+        estimation_errors.append(np.linalg.norm(Pbar - P_est, ord='fro'))
+
+    # plot the estimation errors
+    fig, ax = plt.subplots()
+    ax.plot(T, estimation_errors)
+    ax.set_xlabel(r'Trajectory Length $T$')
+    ax.set_ylabel(r'$\|\hat{\bar{P}} - \bar{P}\|_F$')
+    plt.tight_layout()
+    plt.savefig('estimation_errors.pdf')
+    plt.savefig('estimation_errors.png', dpi=150, bbox_inches='tight')
+
+
+def fig_mean_capture_time_convergence(seed: int = 42) -> None:
+    """Reproduce Fig. 4: empirical mean capture time vs. number of trials for P_bar and lifted P.
+
+    For P_bar the mean converges to M(P_bar); for the lifted P it converges to M^lift(P),
+    not M(P), demonstrating that the lifted Kemeny constant is the correct performance metric.
+    """
+    rng = np.random.default_rng(seed)
+    Pbar = np.array([[0, 1, 0, 0], [0.5, 0, 0.5, 0], [0, 0.5, 0, 0.5], [0, 0, 1, 0]])
+    pi_bar = stationary_distribution(Pbar)
+    m = Pbar.shape[0]
+
+    p = 0.9
+    P = np.array([
+        [0,   p,   0,   0,   0,   1-p],
+        [1-p, 0,   p,   0,   0,   0  ],
+        [0,   1-p, 0,   p,   0,   0  ],
+        [0,   0,   1-p, 0,   p,   0  ],
+        [0,   0,   0,   1-p, 0,   p  ],
+        [p,   0,   0,   0,   1-p, 0  ],
+    ])
+    V = np.array([
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1],
+        [0, 0, 1, 0],
+        [0, 1, 0, 0],
+    ])
+    n = P.shape[0]
+    virtual_to_physical = V.argmax(axis=1)
+    pi = stationary_distribution(P)
+
+    N_trials = 3000
+
+    # simulate Pbar: patroller and adversary drawn from pi_bar; count first-passage steps (k >= 1)
+    capture_times_bar = []
+    for _ in range(N_trials):
+        patroller = rng.choice(m, p=pi_bar)
+        adversary = rng.choice(m, p=pi_bar)
+        t = 0
+        while True:
+            patroller = rng.choice(m, p=Pbar[patroller])
+            t += 1
+            if patroller == adversary:
+                break
+        capture_times_bar.append(t)
+
+    # simulate P: patroller drawn from pi (virtual), adversary drawn from pi_bar (physical)
+    capture_times_lift = []
+    for _ in range(N_trials):
+        patroller = rng.choice(n, p=pi)
+        adversary = rng.choice(m, p=pi_bar)
+        t = 0
+        while True:
+            patroller = rng.choice(n, p=P[patroller])
+            t += 1
+            if virtual_to_physical[patroller] == adversary:
+                break
+        capture_times_lift.append(t)
+
+    # compute the empirical mean capture times as a function of the number of trials
+    trials = np.arange(1, N_trials + 1)
+    mean_bar  = np.cumsum(capture_times_bar)  / trials
+    mean_lift = np.cumsum(capture_times_lift) / trials
+
+    fig, ax = plt.subplots()
+    ax.plot(trials, mean_bar,  label=r'Empirical Mean Capture Time $\bar{P}$')
+    ax.plot(trials, mean_lift, label=r'Empirical Mean Capture Time $P$', color='orange')
+    ax.axhline(kemeny(Pbar),        linestyle='--', label=r'$K(\bar{P})$')
+    ax.axhline(lifted_kemeny(P, V), linestyle='--', label=r'$K^{\mathrm{lift}}(P)$', color='orange')
+    ax.axhline(kemeny(P),           linestyle='--', label=r'$K(P)$', color='green')
+    ax.set_xlabel('Number of Trials')
+    ax.set_ylabel('Mean Capture Time')
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig('mean_capture_time.pdf')
+    plt.savefig('mean_capture_time.png', dpi=150, bbox_inches='tight')
 
 
 def fig_erdos_renyi_kemeny_percent_decrease(
@@ -101,7 +342,7 @@ def fig_erdos_renyi_kemeny_percent_decrease(
     )
     axes[-1].set_xlabel(
         r'Decrease in Kemeny Constant [%]',
-        fontsize=16,
+        fontsize=18,
     )
     for ax in axes:
         ax.axvline(0, color='gray', lw=0.8, ls=':', zorder=0)
@@ -189,7 +430,7 @@ def fig_erdos_renyi_stackelberg_percent_increase(
     )
     axes[-1].set_xlabel(
         r'Increase in Stackelberg Metric [%]',
-        fontsize=16,
+        fontsize=18,
     )
     for ax in axes:
         ax.axvline(0, color='gray', lw=0.8, ls=':', zorder=0)
@@ -283,7 +524,7 @@ def fig_erdos_renyi_rte_percent_increase(
     )
     axes[-1].set_xlabel(
         r'Increase in Return-Time Entropy [%]',
-        fontsize=16,
+        fontsize=18,
     )
     for ax in axes:
         ax.axvline(0, color='gray', lw=0.8, ls=':', zorder=0)
@@ -371,251 +612,13 @@ def fig_lifting_budget_sweep_boxplot(
     print("Saved: results/lifting_budget_sweep_boxplot.pdf / .png")
 
 
-def fig_kemeny_vs_transition_probability() -> None:
-    """Reproduce Fig. 2: Kemeny constant of the lifted MC vs. transition probability p."""
-    pvec = np.linspace(0, 1, 100)
-    kvec = []
-    # compute Kemeny's constant for each value of p
-    for p in pvec:
-        P = np.array([
-            [0,   p,   0,   0,   0,   1-p],
-            [1-p, 0,   p,   0,   0,   0  ],
-            [0,   1-p, 0,   p,   0,   0  ],
-            [0,   0,   1-p, 0,   p,   0  ],
-            [0,   0,   0,   1-p, 0,   p  ],
-            [p,   0,   0,   0,   1-p, 0  ],
-        ])
-        kvec.append(kemeny(P))
-
-    fig, ax = plt.subplots()
-    ax.plot(pvec, kvec)
-    ax.axhline(25/6, linestyle='--', label=r'$K(\bar{P}) = 25/6$')
-    ax.set_xlabel(r'$p$')
-    ax.set_ylabel(r'$K(P)$')
-    ax.legend()
-    plt.tight_layout()
-    plt.savefig('kemeny_vs_p.pdf')
-
-
-def fig_estimation_error_vs_trajectory_length(seed: int = 42) -> None:
-    """Reproduce Fig. 3: MLE estimation error vs. trajectory length.
-
-    Proposition 4 guarantees the plug-in estimate of the physical-space MC converges to P_bar,
-    so the error should decay to zero as the trajectory length grows.
-    """
-    rng = np.random.default_rng(seed)
-    p = 0.9
-    P = np.array([
-        [0,   p,   0,   0,   0,   1-p],
-        [1-p, 0,   p,   0,   0,   0  ],
-        [0,   1-p, 0,   p,   0,   0  ],
-        [0,   0,   1-p, 0,   p,   0  ],
-        [0,   0,   0,   1-p, 0,   p  ],
-        [p,   0,   0,   0,   1-p, 0  ],
-    ])
-    # mapping matrix from virtual states to physical states
-    V = np.array([
-        [1, 0, 0, 0],
-        [0, 1, 0, 0],
-        [0, 0, 1, 0],
-        [0, 0, 0, 1],
-        [0, 0, 1, 0],
-        [0, 1, 0, 0],
-    ])
-    n, m = V.shape
-    virtual_to_physical = V.argmax(axis=1).tolist()
-
-    # collapsed transition matrix
-    pi = stationary_distribution(P)
-    Pbar, _ = collapsing(P, V)
-
-    # simulate the lifted Markov chain
-    x0 = rng.choice(n, p=pi)
-    x = [x0]
-    for _ in range(10000 - 1):
-        x.append(rng.choice(n, p=P[x[-1]]))
-    y = [virtual_to_physical[xi] for xi in x]
-
-    # estimate the underlying Markov chain's transition matrix from the simulated trajectory
-    T = np.arange(10, 10000, 10)
-    estimation_errors = []
-    counts = np.zeros((m, m))
-    prev = 0
-    for t in T:
-        for i in range(prev, t - 1):
-            counts[y[i], y[i + 1]] += 1
-        prev = t - 1
-        row_sums = counts.sum(axis=1, keepdims=True)
-        row_sums[row_sums == 0] = 1  # unvisited rows stay zero after division
-        P_est = counts / row_sums
-        estimation_errors.append(np.linalg.norm(Pbar - P_est, ord='fro'))
-
-    # plot the estimation errors
-    fig, ax = plt.subplots()
-    ax.plot(T, estimation_errors)
-    ax.set_xlabel(r'Trajectory Length $T$')
-    ax.set_ylabel(r'$\|\hat{\bar{P}} - \bar{P}\|_F$')
-    plt.tight_layout()
-    plt.savefig('estimation_errors.pdf')
-
-
-def fig_mean_capture_time_convergence(seed: int = 42) -> None:
-    """Reproduce Fig. 4: empirical mean capture time vs. number of trials for P_bar and lifted P.
-
-    For P_bar the mean converges to M(P_bar); for the lifted P it converges to M^lift(P),
-    not M(P), demonstrating that the lifted Kemeny constant is the correct performance metric.
-    """
-    rng = np.random.default_rng(seed)
-    Pbar = np.array([[0, 1, 0, 0], [0.5, 0, 0.5, 0], [0, 0.5, 0, 0.5], [0, 0, 1, 0]])
-    pi_bar = stationary_distribution(Pbar)
-    m = Pbar.shape[0]
-
-    p = 0.9
-    P = np.array([
-        [0,   p,   0,   0,   0,   1-p],
-        [1-p, 0,   p,   0,   0,   0  ],
-        [0,   1-p, 0,   p,   0,   0  ],
-        [0,   0,   1-p, 0,   p,   0  ],
-        [0,   0,   0,   1-p, 0,   p  ],
-        [p,   0,   0,   0,   1-p, 0  ],
-    ])
-    V = np.array([
-        [1, 0, 0, 0],
-        [0, 1, 0, 0],
-        [0, 0, 1, 0],
-        [0, 0, 0, 1],
-        [0, 0, 1, 0],
-        [0, 1, 0, 0],
-    ])
-    n = P.shape[0]
-    virtual_to_physical = V.argmax(axis=1)
-    pi = stationary_distribution(P)
-
-    N_trials = 10000
-
-    # simulate Pbar: patroller and adversary drawn from pi_bar; count first-passage steps (k >= 1)
-    capture_times_bar = []
-    for _ in range(N_trials):
-        patroller = rng.choice(m, p=pi_bar)
-        adversary = rng.choice(m, p=pi_bar)
-        t = 0
-        while True:
-            patroller = rng.choice(m, p=Pbar[patroller])
-            t += 1
-            if patroller == adversary:
-                break
-        capture_times_bar.append(t)
-
-    # simulate P: patroller drawn from pi (virtual), adversary drawn from pi_bar (physical)
-    capture_times_lift = []
-    for _ in range(N_trials):
-        patroller = rng.choice(n, p=pi)
-        adversary = rng.choice(m, p=pi_bar)
-        t = 0
-        while True:
-            patroller = rng.choice(n, p=P[patroller])
-            t += 1
-            if virtual_to_physical[patroller] == adversary:
-                break
-        capture_times_lift.append(t)
-
-    # compute the empirical mean capture times as a function of the number of trials
-    trials = np.arange(1, N_trials + 1)
-    mean_bar  = np.cumsum(capture_times_bar)  / trials
-    mean_lift = np.cumsum(capture_times_lift) / trials
-
-    fig, ax = plt.subplots()
-    ax.plot(trials, mean_bar,  label=r'Empirical Mean Capture Time $\bar{P}$')
-    ax.plot(trials, mean_lift, label=r'Empirical Mean Capture Time $P$', color='orange')
-    ax.axhline(kemeny(Pbar),        linestyle='--', label=r'$K(\bar{P})$')
-    ax.axhline(lifted_kemeny(P, V), linestyle='--', label=r'$K^{\mathrm{lift}}(P)$', color='orange')
-    ax.axhline(kemeny(P),           linestyle='--', label=r'$K(P)$', color='green')
-    ax.set_xlabel('Number of Trials')
-    ax.set_ylabel('Mean Capture Time')
-    ax.legend()
-    plt.tight_layout()
-    plt.savefig('mean_capture_time.pdf')
-
-
-def fig_random_graphs(m: int = 10, p_values=None, seed: int = 42) -> None:
-    """Plot randomly generated Erdős-Rényi graphs G(m, p) with self-loops for several p."""
-    if p_values is None:
-        p_values = [0.2, 0.4, 0.6, 0.8]
-
-    fig, axes = plt.subplots(1, len(p_values), figsize=(6 * len(p_values), 6))
-
-    rng = np.random.default_rng(seed)
-
-    graphs = []
-    for p in p_values:
-        A = erdos_renyi_graph(m, p, seed=seed)
-        G = nx.from_numpy_array(A, create_using=nx.Graph)
-        pi_bar = rng.dirichlet(5 * np.ones(m))
-        pos = nx.spring_layout(G, seed=seed)
-        graphs.append((G, pi_bar, pos))
-
-    vmin = min(pi_bar.min() for _, pi_bar, _ in graphs)
-    vmax = max(pi_bar.max() for _, pi_bar, _ in graphs)
-
-    for ax, p, (G, pi_bar, pos) in zip(axes, p_values, graphs):
-        nx.draw_networkx(G, pos=pos, ax=ax,
-                         node_color=pi_bar, cmap='viridis', vmin=vmin, vmax=vmax,
-                         node_size=700, font_color='white', font_weight='bold')
-        ax.set_title(f'Erdős–Rényi $G({m},\\ {p})$', pad=12)
-
-    sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
-    sm.set_array([])
-    fig.colorbar(sm, ax=axes, orientation='horizontal', fraction=0.05, pad=0.05,
-                 label='Stationary distribution $\\bar\\pi$')
-
-    plt.savefig('random_graphs.pdf', bbox_inches='tight')
-    plt.savefig('random_graphs.png', dpi=150, bbox_inches='tight')
-
-
-def fig_random_digraphs(m: int = 10, p_values=None, seed: int = 42) -> None:
-    """Plot randomly generated Erdős-Rényi digraphs D(m, p) with self-loops for several p."""
-    if p_values is None:
-        p_values = [0.2, 0.4, 0.6, 0.8]
-
-    fig, axes = plt.subplots(1, len(p_values), figsize=(6 * len(p_values), 6))
-
-    rng = np.random.default_rng(seed)
-
-    graphs = []
-    for p in p_values:
-        A = erdos_renyi_digraph(m, p, seed=seed)
-        G = nx.from_numpy_array(A, create_using=nx.DiGraph)
-        pi_bar = rng.dirichlet(5 * np.ones(m))
-        pos = nx.spring_layout(G, seed=seed)
-        graphs.append((G, pi_bar, pos))
-
-    vmin = min(pi_bar.min() for _, pi_bar, _ in graphs)
-    vmax = max(pi_bar.max() for _, pi_bar, _ in graphs)
-
-    for ax, p, (G, pi_bar, pos) in zip(axes, p_values, graphs):
-        nx.draw_networkx(G, pos=pos, ax=ax,
-                         node_color=pi_bar, cmap='viridis', vmin=vmin, vmax=vmax,
-                         node_size=700, font_color='white', font_weight='bold',
-                         arrows=True, arrowstyle='-|>', arrowsize=15,
-                         connectionstyle='arc3,rad=0.1')
-        ax.set_title(f'Erdős–Rényi $D({m},\\ {p})$', pad=12)
-
-    sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
-    sm.set_array([])
-    fig.colorbar(sm, ax=axes, orientation='horizontal', fraction=0.05, pad=0.05,
-                 label='Stationary distribution $\\bar\\pi$')
-
-    plt.savefig('random_digraphs.pdf', bbox_inches='tight')
-    plt.savefig('random_digraphs.png', dpi=150, bbox_inches='tight')
-
-
 if __name__ == "__main__":
     # fig_random_graphs()
     # fig_random_digraphs()
     # fig_kemeny_vs_transition_probability()
     # fig_estimation_error_vs_trajectory_length()
-    # fig_mean_capture_time_convergence()
+    fig_mean_capture_time_convergence()
     # fig_erdos_renyi_kemeny_percent_decrease()
     # fig_erdos_renyi_stackelberg_percent_increase()
     # fig_erdos_renyi_rte_percent_increase()
-    fig_lifting_budget_sweep_boxplot()
+    # fig_lifting_budget_sweep_boxplot()

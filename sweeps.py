@@ -2,6 +2,7 @@
 import time as time
 import numpy as np
 import networkx as nx
+import cvxpy as cp
 
 from markov import ergodic_flow_to_transition, conductance, SUPPORT_ATOL
 from metrics import stackelberg, lifted_stackelberg
@@ -106,16 +107,16 @@ def erdos_renyi_kemeny_improvement(
                 _t0_phys = time.perf_counter()
                 for _ in range(n_init):
                     Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
-                    Q0 = phys_proj(Q0)
 
                     try:
+                        Q0 = phys_proj(Q0)
                         Q_opt, hist, n_iters_phys = projected_gradient_descent(
                             Q0,
                             _grad_kemeny,
                             phys_proj,
                             alpha_phys, n_iter_phys, tol_phys,
                         )
-                    except (np.linalg.LinAlgError, RuntimeError) as e:
+                    except (np.linalg.LinAlgError, RuntimeError, cp.error.SolverError) as e:
                         print(f"  physical PGD init failed ({e}); skipping", flush=True)
                         continue
 
@@ -151,16 +152,16 @@ def erdos_renyi_kemeny_improvement(
             _t0_lift = time.perf_counter()
             for _ in range(n_init):
                 Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
-                Q0_lift = lift_proj(Q0_lift)
 
                 try:
+                    Q0_lift = lift_proj(Q0_lift)
                     Q_lift_opt, hist_lift, n_iters_lift = projected_gradient_descent(
                         Q0_lift,
                         lambda Q, _V=V, _pi=pi_bar: _grad_lifted_kemeny(Q, _V, _pi),
                         lift_proj,
                         alpha_lift, n_iter_lift, tol_lift,
                     )
-                except (np.linalg.LinAlgError, RuntimeError) as e:
+                except (np.linalg.LinAlgError, RuntimeError, cp.error.SolverError) as e:
                     print(f"  lifted PGD init failed ({e}); skipping", flush=True)
                     continue
                 if hist_lift and 0 < hist_lift[-1] < kemeny_lift:
@@ -312,15 +313,19 @@ def erdos_renyi_stackelberg_improvement(
             _t0_phys = time.perf_counter()
             for _ in range(n_init):
                 Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
-                Q0 = phys_proj(Q0)
 
-                Q_opt, hist, n_iters_phys = projected_gradient_descent(
-                    Q0,
-                    lambda Q, lse_temp, f=grad_stackelberg: tuple(-x for x in f(Q, lse_temp)),
-                    phys_proj,
-                    alpha_phys, n_iter_phys, tol_phys,
-                    temp_schedule=lambda k: temp0 * temp_decay ** k,
-                )
+                try:
+                    Q0 = phys_proj(Q0)
+                    Q_opt, hist, n_iters_phys = projected_gradient_descent(
+                        Q0,
+                        lambda Q, lse_temp, f=grad_stackelberg: tuple(-x for x in f(Q, lse_temp)),
+                        phys_proj,
+                        alpha_phys, n_iter_phys, tol_phys,
+                        temp_schedule=lambda k: temp0 * temp_decay ** k,
+                    )
+                except (RuntimeError, cp.error.SolverError) as e:
+                    print(f"  physical PGD init failed ({e}); skipping", flush=True)
+                    continue
                 if hist:
                     P_opt = ergodic_flow_to_transition(Q_opt)
                     capt_prob_tmp = stackelberg(P_opt, tau)
@@ -348,15 +353,19 @@ def erdos_renyi_stackelberg_improvement(
             _t0_lift = time.perf_counter()
             for _ in range(n_init):
                 Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
-                Q0_lift = lift_proj(Q0_lift)
 
-                Q_lift_opt, hist_lift, n_iters_lift = projected_gradient_descent(
-                    Q0_lift,
-                    lambda Q, lse_temp, f=grad_lifted_stb: tuple(-x for x in f(Q, lse_temp)),
-                    lift_proj,
-                    alpha_lift, n_iter_lift, tol_lift,
-                    temp_schedule=lambda k: temp0 * temp_decay ** k,
-                )
+                try:
+                    Q0_lift = lift_proj(Q0_lift)
+                    Q_lift_opt, hist_lift, n_iters_lift = projected_gradient_descent(
+                        Q0_lift,
+                        lambda Q, lse_temp, f=grad_lifted_stb: tuple(-x for x in f(Q, lse_temp)),
+                        lift_proj,
+                        alpha_lift, n_iter_lift, tol_lift,
+                        temp_schedule=lambda k: temp0 * temp_decay ** k,
+                    )
+                except (RuntimeError, cp.error.SolverError) as e:
+                    print(f"  lifted PGD init failed ({e}); skipping", flush=True)
+                    continue
                 if hist_lift:
                     P_lift_opt = ergodic_flow_to_transition(Q_lift_opt)
                     capt_prob_tmp = lifted_stackelberg(P_lift_opt, V, tau)
@@ -510,14 +519,18 @@ def erdos_renyi_rte_improvement(
                 _t0_phys = time.perf_counter()
                 for _ in range(n_init):
                     Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
-                    Q0 = phys_proj(Q0)
 
-                    Q_opt, hist, n_iters_phys = projected_gradient_descent(
-                        Q0,
-                        lambda Q, f=grad_rte: tuple(-x for x in f(Q)),
-                        phys_proj,
-                        alpha_phys, n_iter_phys, tol_phys,
-                    )
+                    try:
+                        Q0 = phys_proj(Q0)
+                        Q_opt, hist, n_iters_phys = projected_gradient_descent(
+                            Q0,
+                            lambda Q, f=grad_rte: tuple(-x for x in f(Q)),
+                            phys_proj,
+                            alpha_phys, n_iter_phys, tol_phys,
+                        )
+                    except (RuntimeError, cp.error.SolverError) as e:
+                        print(f"  physical PGD init failed ({e}); skipping", flush=True)
+                        continue
                     if hist and -hist[-1] > rte_phys:
                         rte_phys = -hist[-1]
                         best_Q_bar = Q_opt
@@ -539,14 +552,18 @@ def erdos_renyi_rte_improvement(
             _t0_lift = time.perf_counter()
             for _ in range(n_init):
                 Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
-                Q0_lift = lift_proj(Q0_lift)
 
-                Q_lift_opt, hist_lift, n_iters_lift = projected_gradient_descent(
-                    Q0_lift,
-                    lambda Q, f=grad_lifted_rte: tuple(-x for x in f(Q)),
-                    lift_proj,
-                    alpha_lift, n_iter_lift, tol_lift,
-                )
+                try:
+                    Q0_lift = lift_proj(Q0_lift)
+                    Q_lift_opt, hist_lift, n_iters_lift = projected_gradient_descent(
+                        Q0_lift,
+                        lambda Q, f=grad_lifted_rte: tuple(-x for x in f(Q)),
+                        lift_proj,
+                        alpha_lift, n_iter_lift, tol_lift,
+                    )
+                except (RuntimeError, cp.error.SolverError) as e:
+                    print(f"  lifted PGD init failed ({e}); skipping", flush=True)
+                    continue
                 if hist_lift and -hist_lift[-1] > rte_lift:
                     rte_lift = -hist_lift[-1]
                     best_Q_lift = Q_lift_opt
@@ -653,16 +670,16 @@ def san_francisco_kemeny_improvement(
         best_n_iters_phys = 0
         for _ in range(n_init):
             Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
-            Q0 = phys_proj(Q0)
 
             try:
+                Q0 = phys_proj(Q0)
                 Q_opt, hist, n_iters_phys = projected_gradient_descent(
                     Q0,
                     lambda Q, _W=W: _grad_kemeny(Q, _W),
                     phys_proj,
                     alpha_phys, n_iter_phys, tol_phys,
                 )
-            except (np.linalg.LinAlgError, RuntimeError) as e:
+            except (np.linalg.LinAlgError, RuntimeError, cp.error.SolverError) as e:
                 print(f"  physical PGD init failed ({e}); skipping", flush=True)
                 continue
             # A diverged PGD restart (near-singular adjoint solve in _grad_kemeny,
@@ -689,21 +706,23 @@ def san_francisco_kemeny_improvement(
         while n_succeeded < n_init and n_attempts < max_attempts:
             n_attempts += 1
             Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
-            Q0_lift = lift_proj(Q0_lift)
 
             try:
+                Q0_lift = lift_proj(Q0_lift)
                 Q_lift_opt, hist_lift, n_iters_lift = projected_gradient_descent(
                     Q0_lift,
                     lambda Q, _V=V, _pi=pi_bar, _W=W_lift: _grad_lifted_kemeny(Q, _V, _pi, _W),
                     lift_proj,
                     alpha_lift, n_iter_lift, tol_lift,
                 )
-            except np.linalg.LinAlgError:
+            except (np.linalg.LinAlgError, RuntimeError, cp.error.SolverError):
                 # PGD can occasionally drive a degree_lifting virtual state's
                 # stationary probability so close to zero that the linear solves
-                # inside _grad_lifted_kemeny go numerically singular. Discard
-                # this restart and draw a fresh random init rather than biasing
-                # the optimizer away from that (potentially near-optimal) region.
+                # inside _grad_lifted_kemeny go numerically singular (LinAlgError),
+                # or push the QP projection (RuntimeError, see optimize.py) to a
+                # non-optimal status. Either way, discard this restart and draw a
+                # fresh random init rather than biasing the optimizer away from
+                # that (potentially near-optimal) region.
                 continue
             n_succeeded += 1
             if hist_lift and hist_lift[-1] < kemeny_lift:
@@ -823,20 +842,27 @@ def san_francisco_stackelberg_improvement(
         best_n_iters_phys = 0
         for _ in range(n_init):
             Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
-            Q0 = phys_proj(Q0)
 
-            Q_opt, hist, n_iters_phys = projected_gradient_descent(
-                Q0,
-                lambda Q, lse_temp, f=grad_stackelberg: tuple(-x for x in f(Q, lse_temp)),
-                phys_proj,
-                alpha_phys, n_iter_phys, tol_phys,
-                temp_schedule=lambda k: temp0 * temp_decay ** k,
-            )
+            try:
+                Q0 = phys_proj(Q0)
+                Q_opt, hist, n_iters_phys = projected_gradient_descent(
+                    Q0,
+                    lambda Q, lse_temp, f=grad_stackelberg: tuple(-x for x in f(Q, lse_temp)),
+                    phys_proj,
+                    alpha_phys, n_iter_phys, tol_phys,
+                    temp_schedule=lambda k: temp0 * temp_decay ** k,
+                )
+            except (RuntimeError, cp.error.SolverError) as e:
+                print(f"  physical PGD init failed ({e}); skipping", flush=True)
+                continue
             if hist and hist[-1] < capt_prob_phys:
                 P_opt = ergodic_flow_to_transition(Q_opt)
                 capt_prob_phys = stackelberg(P_opt, tau, W)
                 best_Q_bar = Q_opt
                 best_n_iters_phys = n_iters_phys
+
+        if best_Q_bar is None:
+            raise RuntimeError(f"trial {t + 1}/{n_trials}: all {n_init} physical PGD restarts failed")
 
         A_lift = V @ (best_Q_bar > SUPPORT_ATOL).astype(int) @ V.T
         best_Q_lift: np.ndarray | None = None
@@ -845,20 +871,27 @@ def san_francisco_stackelberg_improvement(
         lift_proj = make_project_Q(best_Q_bar, V, epsilon=0.0)
         for _ in range(n_init):
             Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
-            Q0_lift = lift_proj(Q0_lift)
 
-            Q_lift_opt, hist_lift, n_iters_lift = projected_gradient_descent(
-                Q0_lift,
-                lambda Q, lse_temp, f=grad_lifted_stb: tuple(-x for x in f(Q, lse_temp)),
-                lift_proj,
-                alpha_lift, n_iter_lift, tol_lift,
-                temp_schedule=lambda k: temp0 * temp_decay ** k,
-            )
+            try:
+                Q0_lift = lift_proj(Q0_lift)
+                Q_lift_opt, hist_lift, n_iters_lift = projected_gradient_descent(
+                    Q0_lift,
+                    lambda Q, lse_temp, f=grad_lifted_stb: tuple(-x for x in f(Q, lse_temp)),
+                    lift_proj,
+                    alpha_lift, n_iter_lift, tol_lift,
+                    temp_schedule=lambda k: temp0 * temp_decay ** k,
+                )
+            except (RuntimeError, cp.error.SolverError) as e:
+                print(f"  lifted PGD init failed ({e}); skipping", flush=True)
+                continue
             if hist_lift and hist_lift[-1] < capt_prob_lift:
                 P_lift_opt = ergodic_flow_to_transition(Q_lift_opt)
                 capt_prob_lift = lifted_stackelberg(P_lift_opt, V, tau, W_lift)
                 best_Q_lift = Q_lift_opt
                 best_n_iters_lift = n_iters_lift
+
+        if best_Q_lift is None:
+            raise RuntimeError(f"trial {t + 1}/{n_trials}: all {n_init} lifted PGD restarts failed")
 
         diff = capt_prob_lift - capt_prob_phys
         if capt_prob_phys > 0 and capt_prob_lift > 0:
@@ -965,15 +998,15 @@ def kemeny_lifting_budget_sweep(
 
             for _ in range(n_init):
                 Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
-                Q0 = phys_proj(Q0)
                 try:
+                    Q0 = phys_proj(Q0)
                     Q_opt, hist, _ = projected_gradient_descent(
                         Q0,
                         _grad_kemeny,
                         phys_proj,
                         alpha_phys, n_iter_phys, tol_phys,
                     )
-                except (np.linalg.LinAlgError, RuntimeError) as e:
+                except (np.linalg.LinAlgError, RuntimeError, cp.error.SolverError) as e:
                     print(f"  physical PGD init failed ({e}); skipping", flush=True)
                     continue
 
@@ -1018,15 +1051,15 @@ def kemeny_lifting_budget_sweep(
                 best_n_iters_lift = 0
                 for _ in range(n_init):
                     Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
-                    Q0_lift = lift_proj(Q0_lift)
                     try:
+                        Q0_lift = lift_proj(Q0_lift)
                         Q_lift_opt, hist_lift, n_iters_lift = projected_gradient_descent(
                             Q0_lift,
                             lambda Q, _V=V, _pi=pi_bar: _grad_lifted_kemeny(Q, _V, _pi),
                             lift_proj,
                             alpha_lift, n_iter_lift, tol_lift,
                         )
-                    except (np.linalg.LinAlgError, RuntimeError) as e:
+                    except (np.linalg.LinAlgError, RuntimeError, cp.error.SolverError) as e:
                         print(f"    [{name}] lifted PGD init failed ({e}); skipping", flush=True)
                         continue
                     if hist_lift and 0 < hist_lift[-1] < kemeny_lift:
@@ -1172,10 +1205,10 @@ if __name__ == "__main__":
     m = 10
     kemeny_lifting_budget_sweep(
         m=m,
-        n_graphs=20,
+        n_graphs=5,
         p_range=(0.2, 0.8),
         budget_values = [round(1.5*m), 2*m, round(2.5*m), 3*m, round(3.5*m)],
-        n_init=5,
+        n_init=1,
         n_iter_phys=150,
         alpha_phys=2e-3,
         tol_phys=1e-5,

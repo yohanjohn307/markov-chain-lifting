@@ -7,20 +7,60 @@ from jax.scipy.special import logsumexp
 from markov import _check_mapping, _check_ergodic_flow, EQUALITY_ATOL, SUPPORT_ATOL
 
 
-_SOLVER_TOL = EQUALITY_ATOL * 1e-2
+_SOLVER_TOL = EQUALITY_ATOL * 1e-3
 _DEFAULT_MAX_ITER = 10_000
-
-
-def _solve_projection(prob: cp.Problem, warm_start: bool, max_iter: int = _DEFAULT_MAX_ITER) -> None:
-    """Solve a projection QP, falling back to a cold start if warm-started OSQP stalls."""
-    prob.solve(solver=cp.OSQP, warm_start=warm_start, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL, max_iter=max_iter)
-    if warm_start and prob.status != cp.OPTIMAL:
-        prob.solve(solver=cp.OSQP, warm_start=False, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL, max_iter=max_iter)
+_PROJECTION_VIOLATION_TOL = 1e-4
 
 
 def _clip_to_support(Q_value: np.ndarray, support: np.ndarray, epsilon: float) -> np.ndarray:
     """Clip a solved projection to its own epsilon*support <= Q <= support constraint."""
     return np.where(support > 0, np.maximum(Q_value, epsilon), 0.0)
+
+
+def _projection_violation(Q_value: np.ndarray | None, lower: np.ndarray, upper: np.ndarray) -> float:
+    """Max amount by which Q_value falls outside [lower, upper], or its row sums
+    differ from its column sums (0 if fully feasible).
+
+    The row/col check matters here specifically because _clip_to_support can
+    introduce that drift even when the raw solve was on-manifold: flooring
+    below-epsilon entries and zeroing off-support ones isn't re-projected onto
+    Q @ 1 == Q.T @ 1, so this must be evaluated on the *clipped* candidate, not
+    the raw solver output, to actually catch it.
+    """
+    if Q_value is None:
+        return np.inf
+    box = max(float(np.max(lower - Q_value)), float(np.max(Q_value - upper)), 0.0)
+    row_col_gap = float(np.max(np.abs(Q_value.sum(axis=1) - Q_value.sum(axis=0))))
+    return max(box, row_col_gap)
+
+
+def _solve_projection(
+    prob: cp.Problem,
+    warm_start: bool,
+    Q: cp.Variable,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    support: np.ndarray,
+    epsilon: float,
+    max_iter: int = _DEFAULT_MAX_ITER,
+) -> tuple[np.ndarray | None, float]:
+    """Solve a projection QP and clip the result, falling back to a cold start
+    if warm-started OSQP stalls (status != optimal) or silently returns a point
+    that's infeasible -- either directly, or only after clipping -- beyond
+    _PROJECTION_VIOLATION_TOL. Returns (clipped_Q, violation) for the accepted attempt.
+    """
+    def attempt() -> tuple[np.ndarray | None, float]:
+        if Q.value is None:
+            return None, np.inf
+        clipped = _clip_to_support(Q.value, support, epsilon)
+        return clipped, _projection_violation(clipped, lower, upper)
+
+    prob.solve(solver=cp.OSQP, warm_start=warm_start, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL, max_iter=max_iter, polish=True)
+    clipped, violation = attempt()
+    if warm_start and (prob.status != cp.OPTIMAL or violation > _PROJECTION_VIOLATION_TOL):
+        prob.solve(solver=cp.OSQP, warm_start=False, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL, max_iter=max_iter, polish=True)
+        clipped, violation = attempt()
+    return clipped, violation
 
 
 def make_project_Q(
@@ -56,12 +96,18 @@ def make_project_Q(
     ]
     prob = cp.Problem(cp.Minimize(cp.sum_squares(Q - Q_tilde_p)), constraints)
 
+    lower = epsilon * U
+    upper = U
+
     def project(Q_tilde: np.ndarray) -> np.ndarray:
         Q_tilde_p.value = Q_tilde
-        _solve_projection(prob, warm_start=True, max_iter=max_iter)
-        if Q.value is None or prob.status != cp.OPTIMAL:
-            raise RuntimeError(f"project_Q: QP did not converge (status={prob.status}); check that Q_bar is a valid ergodic flow for V")
-        return _clip_to_support(Q.value, U, epsilon)
+        clipped, violation = _solve_projection(prob, warm_start=True, Q=Q, lower=lower, upper=upper, support=U, epsilon=epsilon, max_iter=max_iter)
+        if clipped is None or prob.status != cp.OPTIMAL or violation > _PROJECTION_VIOLATION_TOL:
+            raise RuntimeError(
+                f"project_Q: QP did not converge to a feasible point (status={prob.status}, "
+                f"violation={violation:.3e}); check that Q_bar is a valid ergodic flow for V"
+            )
+        return clipped
 
     return project
 
@@ -89,12 +135,18 @@ def make_project_Q_bar(
     constraints = stationarity + [Q >= epsilon * A, Q <= A]
     prob = cp.Problem(cp.Minimize(cp.sum_squares(Q - Q_tilde_p)), constraints)
 
+    lower = epsilon * A
+    upper = A
+
     def project(Q_tilde: np.ndarray) -> np.ndarray:
         Q_tilde_p.value = Q_tilde
-        _solve_projection(prob, warm_start=True, max_iter=max_iter)
-        if Q.value is None or prob.status != cp.OPTIMAL:
-            raise RuntimeError(f"project_Q_bar: QP did not converge (status={prob.status}); check inputs are consistent")
-        return _clip_to_support(Q.value, A, epsilon)
+        clipped, violation = _solve_projection(prob, warm_start=True, Q=Q, lower=lower, upper=upper, support=A, epsilon=epsilon, max_iter=max_iter)
+        if clipped is None or prob.status != cp.OPTIMAL or violation > _PROJECTION_VIOLATION_TOL:
+            raise RuntimeError(
+                f"project_Q_bar: QP did not converge to a feasible point (status={prob.status}, "
+                f"violation={violation:.3e}); check inputs are consistent"
+            )
+        return clipped
 
     return project
 
