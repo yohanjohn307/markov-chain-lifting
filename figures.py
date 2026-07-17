@@ -9,7 +9,7 @@ from metrics import (
     kemeny, lifted_kemeny, stackelberg, lifted_stackelberg,
     return_time_entropy, lifted_return_time_entropy,
 )
-from graph import degree_lifting, erdos_renyi_graph, erdos_renyi_digraph
+from graph import erdos_renyi_graph, erdos_renyi_digraph
 
 plt.rcParams.update({
     'font.size': 16,
@@ -264,20 +264,22 @@ def fig_mean_capture_time_convergence(seed: int = 42) -> None:
 
 
 def fig_erdos_renyi_kemeny_percent_decrease(
-    data_path: str = 'results/erdos_renyi_kemeny_diffs.npy',
+    data_path: str = 'results/data/erdos_renyi_kemeny_diffs.npy',
 ) -> None:
-    """Ridgeline plot of the percent decrease in Kemeny's constant achieved by degree
-    lifting, vs. Erdős-Rényi edge probability p.
+    """Ridgeline plot of the percent decrease in Kemeny's constant achieved by
+    stationary-distribution lifting, vs. Erdős-Rényi edge probability p.
 
-    Loads the raw optimization results saved by figures.fig_erdos_renyi_kemeny_improvement,
+    Loads the raw optimization results saved by sweeps.erdos_renyi_kemeny_improvement,
     recomputes K(P_bar*) and K^lift(P*) for every graph from the stored ergodic flow
-    matrices, and reports 100 * (K(P_bar*) - K^lift(P*)) / K(P_bar*).
+    matrices (reusing the stored V rather than re-deriving the lifting, so this stays
+    correct regardless of which lifting method/budget the sweep used), and reports
+    100 * (K(P_bar*) - K^lift(P*)) / K(P_bar*).
     """
     data = np.load(data_path, allow_pickle=True).item()
     p_values = data['p_values']
-    all_graphs = data['graphs']
     all_Q_bar = data['Q_bar']
     all_Q_lift = data['Q_lift']
+    all_V = data['V']
     all_times_phys = data['times_phys']
     all_times_lift = data['times_lift']
     all_conductance_lb = data['conductance_lb']
@@ -286,12 +288,11 @@ def fig_erdos_renyi_kemeny_percent_decrease(
     for p_idx, p in enumerate(p_values):
         pct_p: list[float] = []
         conductance_pct_p: list[float] = []
-        for A, Q_bar, Q_lift, conductance_lb in zip(
-            all_graphs[p_idx], all_Q_bar[p_idx], all_Q_lift[p_idx], all_conductance_lb[p_idx]
+        for Q_bar, Q_lift, V, conductance_lb in zip(
+            all_Q_bar[p_idx], all_Q_lift[p_idx], all_V[p_idx], all_conductance_lb[p_idx]
         ):
             if Q_bar is None or Q_lift is None:
                 continue
-            V = degree_lifting(A, budget=Q_lift.shape[0])
             P_bar = ergodic_flow_to_transition(Q_bar)
             P_lift = ergodic_flow_to_transition(Q_lift)
             k_phys = kemeny(P_bar)
@@ -354,7 +355,7 @@ def fig_erdos_renyi_kemeny_percent_decrease(
 
 
 def fig_erdos_renyi_stackelberg_percent_increase(
-    data_path: str = 'results/erdos_renyi_stackelberg_diffs.npy',
+    data_path: str = 'results/data/erdos_renyi_stackelberg_diffs.npy',
 ) -> None:
     """Ridgeline plot of the percent increase in the Stackelberg metric achieved by degree
     lifting, vs. Erdős-Rényi edge probability p.
@@ -380,9 +381,9 @@ def fig_erdos_renyi_stackelberg_percent_increase(
         ):
             if Q_bar is None or Q_lift is None:
                 continue
-            # V is the actual mapping used to produce Q_lift: the degree lifting
-            # if it outperformed the physical optimum, or the identity fallback
-            # (see fig_erdos_renyi_stackelberg_improvement) otherwise.
+            # V is the actual mapping used to produce Q_lift: the realized-stationary-
+            # distribution lifting if it outperformed the physical optimum, or the
+            # identity fallback (see erdos_renyi_stackelberg_improvement) otherwise.
             P_bar = ergodic_flow_to_transition(Q_bar)
             P_lift = ergodic_flow_to_transition(Q_lift)
             j_phys = stackelberg(P_bar, tau)
@@ -409,7 +410,7 @@ def fig_erdos_renyi_stackelberg_percent_increase(
 
     all_vals = [v for d in valid_pct for v in d]
     x_min = float(np.percentile(all_vals, 1))
-    x_max = float(np.percentile(all_vals, 99)) * 1.05
+    x_max = float(np.percentile(all_vals, 90)) * 1.05
 
     df = pd.DataFrame(
         {f'$p={p:.2f}$': pd.Series(
@@ -468,9 +469,9 @@ def fig_erdos_renyi_rte_percent_increase(
         ):
             if Q_bar is None or Q_lift is None:
                 continue
-            # V is the actual mapping used to produce Q_lift: the degree lifting
-            # if it outperformed the physical optimum, or the identity fallback
-            # (see fig_erdos_renyi_rte_improvement) otherwise.
+            # V is the actual mapping used to produce Q_lift: the stationary-
+            # distribution lifting if it outperformed the physical optimum, or the
+            # identity fallback (see erdos_renyi_rte_improvement) otherwise.
             P_bar = ergodic_flow_to_transition(Q_bar)
             P_lift = ergodic_flow_to_transition(Q_lift)
             # Pass pi = Q.sum(axis=1) directly rather than let return_time_entropy
@@ -564,7 +565,10 @@ def fig_lifting_budget_sweep_boxplot(
     """
     data = np.load(data_path, allow_pickle=True).item()
     m = data['m']
-    budget_values = np.asarray(data['budget_values'])
+    budget_values_all = np.asarray(data['budget_values'])
+    keep_mask = ~np.isclose(budget_values_all / m, 3)
+    budget_idx_map = np.where(keep_mask, np.cumsum(keep_mask) - 1, -1)
+    budget_values = budget_values_all[keep_mask]
     kemeny_phys_all = data['kemeny_phys']
     results_all = data['results']
     method_names = list(results_all[0].keys())
@@ -584,7 +588,10 @@ def fig_lifting_budget_sweep_boxplot(
             res = results[name]
             statuses = res.get('status', ['unknown'] * len(res['budgets']))
             for budget, Q_lift, diff, status in zip(res['budgets'], res['Q_lift'], res['diffs'], statuses):
-                budget_idx = int(np.searchsorted(budget_values, budget))
+                orig_idx = int(np.searchsorted(budget_values_all, budget))
+                budget_idx = int(budget_idx_map[orig_idx])
+                if budget_idx < 0:
+                    continue
                 status_counts[method_idx][budget_idx][status] = (
                     status_counts[method_idx][budget_idx].get(status, 0) + 1
                 )
@@ -625,14 +632,15 @@ def fig_lifting_budget_sweep_boxplot(
         ax.plot([], [], color=color, linewidth=6, alpha=0.7, label=name)
 
     ax.axhline(0, color='gray', lw=0.8, ls=':', zorder=0)
+    # ax.set_ylim(top=30)
     ax.set_xticks(np.arange(n_budgets))
     ax.set_xticklabels([f'{b / m:.2g}' for b in budget_values])
     ax.set_xlabel('Lifting Budget / $m$')
     ax.set_ylabel('Decrease in Kemeny Constant [%]')
     ax.legend(title='Lifting Method')
     plt.tight_layout()
-    plt.savefig('results/lifting_budget_sweep_boxplot.pdf', bbox_inches='tight')
-    plt.savefig('results/lifting_budget_sweep_boxplot.png', dpi=150, bbox_inches='tight')
+    plt.savefig('results/lifting_budget_sweep_boxplot.pdf')
+    plt.savefig('results/lifting_budget_sweep_boxplot.png', dpi=150)
     print("Saved: results/lifting_budget_sweep_boxplot.pdf / .png")
 
 
@@ -643,6 +651,6 @@ if __name__ == "__main__":
     # fig_estimation_error_vs_trajectory_length()
     # fig_mean_capture_time_convergence()
     # fig_erdos_renyi_kemeny_percent_decrease()
-    # fig_erdos_renyi_stackelberg_percent_increase()
+    fig_erdos_renyi_stackelberg_percent_increase()
     # fig_erdos_renyi_rte_percent_increase()
-    fig_lifting_budget_sweep_boxplot()
+    # fig_lifting_budget_sweep_boxplot()
