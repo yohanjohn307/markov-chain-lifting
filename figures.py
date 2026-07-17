@@ -536,18 +536,31 @@ def fig_erdos_renyi_rte_percent_increase(
 
 
 def fig_lifting_budget_sweep_boxplot(
-    data_path: str = 'results/lifting_budget_sweep.npy',
+    data_path: str = 'results/data/lifting_budget_sweep.npy',
 ) -> None:
     """Grouped boxplot of percent decrease in Kemeny's constant vs. lifting budget,
     comparing the six lifting-budget allocation heuristics across many random graphs.
 
     Loads the raw optimization results saved by figures.fig_kemeny_lifting_budget_sweep
     (one entry per graph in 'graphs' / 'pi_bar' / 'kemeny_phys' / 'Q_bar' / 'results'),
-    recomputes K^lift(P*) for every (graph, budget, method) triple from the stored
-    ergodic flow matrices, and reports 100 * (K(P_bar*) - K^lift(P*)) / K(P_bar*).
-    For each budget, one box per method summarises the distribution of that
-    percentage across all graphs. Entries where every lifted PGD restart failed
-    (Q_lift is None) are skipped.
+    and for every (graph, budget, method) triple reports the already-computed,
+    guaranteed-nonnegative 100 * diff / K(P_bar*) = 100 * (K(P_bar*) - K^lift(P*)) / K(P_bar*)
+    stored by kemeny_lifting_budget_sweep. This intentionally reuses the stored 'diffs'
+    rather than recomputing K^lift(P*) from the saved ergodic flow matrices: a
+    from-scratch recompute needs the lifted MC's stationary distribution, and
+    re-deriving it via a fresh linear solve (rather than reusing Q_lift.sum(axis=1),
+    which is what the optimizer itself used) can be inaccurate enough at near-zero
+    stationary mass (see kemeny_lifting_budget_sweep's docstring on max_grad_norm_lift)
+    to spuriously flip a positive diff negative. For each budget, one box per method
+    summarises the distribution of that percentage across all graphs. Entries where
+    every lifted PGD restart failed (Q_lift is None) are skipped.
+
+    Also prints a per-method/per-budget count of 'success' / 'no_improvement' /
+    'all_failed' runs (see kemeny_lifting_budget_sweep's docstring), if the
+    loaded data has the 'status' field (older saves predating that field are
+    reported as 'unknown' instead) -- this is what makes the crash-rate
+    reduction from _pgd_restarts and the optimize.py numerical fixes directly
+    verifiable, rather than collapsing into indistinguishable 0% points.
     """
     data = np.load(data_path, allow_pickle=True).item()
     m = data['m']
@@ -562,18 +575,30 @@ def fig_lifting_budget_sweep_boxplot(
 
     # pct[method_idx][budget_idx] = list of percent decreases across graphs
     pct: list[list[list[float]]] = [[[] for _ in range(n_budgets)] for _ in range(n_methods)]
+    # status_counts[method_idx][budget_idx][status] = count across graphs
+    status_counts: list[list[dict]] = [[{} for _ in range(n_budgets)] for _ in range(n_methods)]
     for k_phys, results in zip(kemeny_phys_all, results_all):
         if k_phys <= 0:
             continue
         for method_idx, name in enumerate(method_names):
             res = results[name]
-            for budget, Q_lift, V in zip(res['budgets'], res['Q_lift'], res['V']):
+            statuses = res.get('status', ['unknown'] * len(res['budgets']))
+            for budget, Q_lift, diff, status in zip(res['budgets'], res['Q_lift'], res['diffs'], statuses):
+                budget_idx = int(np.searchsorted(budget_values, budget))
+                status_counts[method_idx][budget_idx][status] = (
+                    status_counts[method_idx][budget_idx].get(status, 0) + 1
+                )
                 if Q_lift is None:
                     continue
-                budget_idx = int(np.searchsorted(budget_values, budget))
-                P_lift = ergodic_flow_to_transition(Q_lift)
-                k_lift = lifted_kemeny(P_lift, V)
-                pct[method_idx][budget_idx].append(100.0 * (k_phys - k_lift) / k_phys)
+                pct[method_idx][budget_idx].append(100.0 * diff / k_phys)
+
+    print(f"{'method':<16}{'budget/m':>10}  status counts")
+    for method_idx, name in enumerate(method_names):
+        for budget_idx, budget in enumerate(budget_values):
+            counts = status_counts[method_idx][budget_idx]
+            if counts:
+                counts_str = ', '.join(f"{k}={v}" for k, v in sorted(counts.items()))
+                print(f"{name:<16}{budget / m:>10.2g}  {counts_str}")
 
     fig, ax = plt.subplots(figsize=(9, 5))
     group_width = 0.8
@@ -587,8 +612,7 @@ def fig_lifting_budget_sweep_boxplot(
             positions=positions,
             widths=box_width * 0.9,
             patch_artist=True,
-            showfliers=True,
-            flierprops=dict(marker='o', markersize=3, markerfacecolor=color, markeredgecolor='none', alpha=0.5),
+            showfliers=False,
             medianprops=dict(color='black', linewidth=1.2),
         )
         for patch in bp['boxes']:
@@ -617,8 +641,8 @@ if __name__ == "__main__":
     # fig_random_digraphs()
     # fig_kemeny_vs_transition_probability()
     # fig_estimation_error_vs_trajectory_length()
-    fig_mean_capture_time_convergence()
+    # fig_mean_capture_time_convergence()
     # fig_erdos_renyi_kemeny_percent_decrease()
     # fig_erdos_renyi_stackelberg_percent_increase()
     # fig_erdos_renyi_rte_percent_increase()
-    # fig_lifting_budget_sweep_boxplot()
+    fig_lifting_budget_sweep_boxplot()

@@ -2,7 +2,6 @@
 import time as time
 import numpy as np
 import networkx as nx
-import cvxpy as cp
 
 from markov import ergodic_flow_to_transition, conductance, SUPPORT_ATOL
 from metrics import stackelberg, lifted_stackelberg
@@ -116,7 +115,7 @@ def erdos_renyi_kemeny_improvement(
                             phys_proj,
                             alpha_phys, n_iter_phys, tol_phys,
                         )
-                    except (np.linalg.LinAlgError, RuntimeError, cp.error.SolverError) as e:
+                    except (np.linalg.LinAlgError, RuntimeError) as e:
                         print(f"  physical PGD init failed ({e}); skipping", flush=True)
                         continue
 
@@ -161,7 +160,7 @@ def erdos_renyi_kemeny_improvement(
                         lift_proj,
                         alpha_lift, n_iter_lift, tol_lift,
                     )
-                except (np.linalg.LinAlgError, RuntimeError, cp.error.SolverError) as e:
+                except (np.linalg.LinAlgError, RuntimeError) as e:
                     print(f"  lifted PGD init failed ({e}); skipping", flush=True)
                     continue
                 if hist_lift and 0 < hist_lift[-1] < kemeny_lift:
@@ -323,7 +322,7 @@ def erdos_renyi_stackelberg_improvement(
                         alpha_phys, n_iter_phys, tol_phys,
                         temp_schedule=lambda k: temp0 * temp_decay ** k,
                     )
-                except (RuntimeError, cp.error.SolverError) as e:
+                except RuntimeError as e:
                     print(f"  physical PGD init failed ({e}); skipping", flush=True)
                     continue
                 if hist:
@@ -363,7 +362,7 @@ def erdos_renyi_stackelberg_improvement(
                         alpha_lift, n_iter_lift, tol_lift,
                         temp_schedule=lambda k: temp0 * temp_decay ** k,
                     )
-                except (RuntimeError, cp.error.SolverError) as e:
+                except RuntimeError as e:
                     print(f"  lifted PGD init failed ({e}); skipping", flush=True)
                     continue
                 if hist_lift:
@@ -528,7 +527,7 @@ def erdos_renyi_rte_improvement(
                             phys_proj,
                             alpha_phys, n_iter_phys, tol_phys,
                         )
-                    except (RuntimeError, cp.error.SolverError) as e:
+                    except RuntimeError as e:
                         print(f"  physical PGD init failed ({e}); skipping", flush=True)
                         continue
                     if hist and -hist[-1] > rte_phys:
@@ -561,7 +560,7 @@ def erdos_renyi_rte_improvement(
                         lift_proj,
                         alpha_lift, n_iter_lift, tol_lift,
                     )
-                except (RuntimeError, cp.error.SolverError) as e:
+                except RuntimeError as e:
                     print(f"  lifted PGD init failed ({e}); skipping", flush=True)
                     continue
                 if hist_lift and -hist_lift[-1] > rte_lift:
@@ -679,7 +678,7 @@ def san_francisco_kemeny_improvement(
                     phys_proj,
                     alpha_phys, n_iter_phys, tol_phys,
                 )
-            except (np.linalg.LinAlgError, RuntimeError, cp.error.SolverError) as e:
+            except (np.linalg.LinAlgError, RuntimeError) as e:
                 print(f"  physical PGD init failed ({e}); skipping", flush=True)
                 continue
             # A diverged PGD restart (near-singular adjoint solve in _grad_kemeny,
@@ -715,7 +714,7 @@ def san_francisco_kemeny_improvement(
                     lift_proj,
                     alpha_lift, n_iter_lift, tol_lift,
                 )
-            except (np.linalg.LinAlgError, RuntimeError, cp.error.SolverError):
+            except (np.linalg.LinAlgError, RuntimeError):
                 # PGD can occasionally drive a degree_lifting virtual state's
                 # stationary probability so close to zero that the linear solves
                 # inside _grad_lifted_kemeny go numerically singular (LinAlgError),
@@ -852,7 +851,7 @@ def san_francisco_stackelberg_improvement(
                     alpha_phys, n_iter_phys, tol_phys,
                     temp_schedule=lambda k: temp0 * temp_decay ** k,
                 )
-            except (RuntimeError, cp.error.SolverError) as e:
+            except RuntimeError as e:
                 print(f"  physical PGD init failed ({e}); skipping", flush=True)
                 continue
             if hist and hist[-1] < capt_prob_phys:
@@ -881,7 +880,7 @@ def san_francisco_stackelberg_improvement(
                     alpha_lift, n_iter_lift, tol_lift,
                     temp_schedule=lambda k: temp0 * temp_decay ** k,
                 )
-            except (RuntimeError, cp.error.SolverError) as e:
+            except RuntimeError as e:
                 print(f"  lifted PGD init failed ({e}); skipping", flush=True)
                 continue
             if hist_lift and hist_lift[-1] < capt_prob_lift:
@@ -922,6 +921,62 @@ def san_francisco_stackelberg_improvement(
             allow_pickle=True)  # type: ignore[arg-type]
 
 
+def _pgd_restarts(
+    make_Q0,
+    project_fn,
+    grad_fn,
+    alpha: float,
+    n_iter: int,
+    tol: float,
+    n_init: int,
+    rng: np.random.Generator,
+    label: str = "",
+    max_attempts: int | None = None,
+    verbose: bool = True,
+    max_grad_norm: float | None = None,
+) -> tuple[float, np.ndarray | None, int, int, int]:
+    """Run PGD restarts until n_init succeed or the attempt budget runs out.
+
+    make_Q0(seed) draws a fresh raw (unprojected) initial point. A restart
+    that raises LinAlgError/RuntimeError (e.g. a marginally-infeasible
+    projection or a near-singular first-passage-time solve) draws a new
+    random init and retries rather than permanently costing a restart slot,
+    up to max_attempts total attempts (default 2 * n_init).
+    max_grad_norm is passed through to projected_gradient_descent -- see its
+    docstring; it is the primary defense against near-zero-stationary-mass
+    virtual states blowing up the gradient and, in turn, the projection step.
+    Returns (best_val, best_Q, best_n_iters, n_success, n_failed): best_val is
+    np.inf and best_Q is None if every attempt failed.
+    """
+    if max_attempts is None:
+        max_attempts = 2 * n_init
+    best_val = np.inf
+    best_Q: np.ndarray | None = None
+    best_n_iters = 0
+    n_success = 0
+    n_failed = 0
+    attempts = 0
+    while n_success < n_init and attempts < max_attempts:
+        attempts += 1
+        Q0 = make_Q0(int(rng.integers(1 << 31)))
+        try:
+            Q0 = project_fn(Q0)
+            Q_opt, hist, n_iters = projected_gradient_descent(
+                Q0, grad_fn, project_fn, alpha, n_iter, tol, max_grad_norm=max_grad_norm,
+            )
+        except (np.linalg.LinAlgError, RuntimeError) as e:
+            n_failed += 1
+            if verbose:
+                print(f"  {label} PGD init failed ({e}); retrying with a fresh init", flush=True)
+            continue
+        n_success += 1
+        if hist and 0 < hist[-1] < best_val:
+            best_val = hist[-1]
+            best_Q = Q_opt
+            best_n_iters = n_iters
+    return best_val, best_Q, best_n_iters, n_success, n_failed
+
+
 def kemeny_lifting_budget_sweep(
     m: int,
     n_graphs: int = 20,
@@ -932,9 +987,12 @@ def kemeny_lifting_budget_sweep(
     n_iter_phys: int = 150,
     alpha_phys: float = 2e-3,
     tol_phys: float = 1e-5,
+    max_kemeny_attempts: int = 10,
     n_iter_lift: int = 150,
     alpha_lift: float = 2e-3,
     tol_lift: float = 1e-5,
+    max_grad_norm_phys: float | None = 2000.0,
+    max_grad_norm_lift: float | None = 2000.0,
     seed: int = 42,
     save_path: str = 'lifting_budget_sweep.npy',
 ) -> None:
@@ -944,24 +1002,47 @@ def kemeny_lifting_budget_sweep(
     uniformly from p_range independently per graph, and a random target stationary
     distribution pi_bar ~ Dirichlet(concentration * 1_m), this:
       1. Optimises the Kemeny constant in the physical space via PGD
-         (n_init starts), once per graph, giving a shared baseline K(P_bar*) and
-         best_Q_bar reused across every budget/method combination for that graph.
+         (n_init successful starts, via _pgd_restarts -- a restart whose PGD
+         raises LinAlgError/RuntimeError draws a fresh random init and retries
+         rather than costing a restart slot), once per graph, giving a shared
+         baseline K(P_bar*) and best_Q_bar reused across every budget/method
+         combination for that graph. If the best K(P_bar*) found still exceeds
+         1000 (a heuristic threshold for a degenerate/poorly-conditioned
+         (A, pi_bar) pairing), a fresh graph A and stationary distribution
+         pi_bar are both resampled together and the restarts are retried, up
+         to max_kemeny_attempts times before raising RuntimeError.
       2. For each budget in budget_values and each of six lifting heuristics
          (uniform, stationary, degree, betweenness, eigenvector, reversible_flow —
          see graph.proportional_lifting and its callers), builds the corresponding
          V of shape (budget, m) and optimises the lifted Kemeny constant
-         via PGD (n_init starts).
-      3. Records K(P_bar*) - K^lift(P*) for every (budget, method) pair.
+         via PGD (n_init successful starts, via _pgd_restarts).
+      3. Records K(P_bar*) - K^lift(P*) for every (budget, method) pair, along
+         with a 'status' of 'success' (diff > 0), 'no_improvement' (PGD
+         converged but found no better optimum than the physical baseline), or
+         'all_failed' (every retried restart raised) -- the latter two both
+         fall back to the identity lifting of P_bar* in 'Q_lift'/'kemeny_lift',
+         but 'status' keeps them distinguishable.
     The reversible_flow method requires best_Q_bar (weights x_i = sum_j
     min(q_bar_ij, q_bar_ji)) and so is built freshly per graph using that graph's
     physical optimum, unlike the other four which only depend on A / pi_bar.
     budget_values defaults to multiples of m from m (the minimum valid budget,
     one virtual state per node, i.e. no lifting) to 4m. Per-graph results (the
     sampled p, the graph A, pi_bar, kemeny_phys, best_Q_bar, and the raw V,
-    Q_lift, kemeny_lift, and diff for every budget/method combination) are
-    collected across all n_graphs and saved to save_path so the distribution of
+    Q_lift, kemeny_lift, diff, and status for every budget/method combination)
+    are collected across all n_graphs and saved to save_path so the distribution of
     improvement for each lifting procedure at each budget can be visualised
     without re-running optimization.
+
+    max_grad_norm_phys/max_grad_norm_lift cap the gradient norm passed to
+    projected_gradient_descent (see its docstring) for the physical/lifted PGD
+    restarts respectively. Near-zero stationary mass on a (virtual) state --
+    more likely at larger lifting budgets or skewed lifting allocations like
+    reversible_flow_lifting -- can make _grad_kemeny/_grad_lifted_kemeny's
+    linear solves severely ill-conditioned, producing gradient norms many
+    orders of magnitude above the typical ~1e2-1e3 range for these problems;
+    an unclipped step then sends the projection's input far outside the
+    feasible region, which is what actually drives most all-restarts-failed
+    outcomes at higher budgets. Set to None to disable clipping.
     """
     if budget_values is None:
         budget_values = np.arange(m, 4 * m + 1, m)
@@ -981,9 +1062,6 @@ def kemeny_lifting_budget_sweep(
 
     for graph_idx in range(n_graphs):
         p = float(rng.uniform(*p_range))
-        A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
-
-        print(f"=== Graph {graph_idx + 1}/{n_graphs}: p={p:.4f} ===", flush=True)
 
         # ------------------------------------------------------------------
         # 1. Optimise the physical Kemeny constant once; shared across every
@@ -991,35 +1069,37 @@ def kemeny_lifting_budget_sweep(
         # ------------------------------------------------------------------
         best_Q_bar: np.ndarray | None = None
         kemeny_phys = np.inf
-        while kemeny_phys > 100:
-            # ensure reasonable compatibility between stationary distribution and graph
+        for attempt in range(max_kemeny_attempts):
+            A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
+            print(f"=== Graph {graph_idx + 1}/{n_graphs}: p={p:.4f} ===", flush=True)
             pi_bar = rng.dirichlet(concentration * np.ones(m))
             phys_proj = make_project_Q_bar(A, pi_bar)
 
-            for _ in range(n_init):
-                Q0 = random_chain(A, seed=int(rng.integers(1 << 31)))
-                try:
-                    Q0 = phys_proj(Q0)
-                    Q_opt, hist, _ = projected_gradient_descent(
-                        Q0,
-                        _grad_kemeny,
-                        phys_proj,
-                        alpha_phys, n_iter_phys, tol_phys,
-                    )
-                except (np.linalg.LinAlgError, RuntimeError, cp.error.SolverError) as e:
-                    print(f"  physical PGD init failed ({e}); skipping", flush=True)
-                    continue
+            kemeny_phys, best_Q_bar, _, _, _ = _pgd_restarts(
+                make_Q0=lambda seed, _A=A: random_chain(_A, seed=seed),
+                project_fn=phys_proj,
+                grad_fn=_grad_kemeny,
+                alpha=alpha_phys, n_iter=n_iter_phys, tol=tol_phys,
+                n_init=n_init, rng=rng, label="physical",
+                max_grad_norm=max_grad_norm_phys,
+            )
 
-                if hist and 0 < hist[-1] < kemeny_phys:
-                    kemeny_phys = hist[-1]
-                    best_Q_bar = Q_opt
+            if kemeny_phys <= 1000:
+                break
 
-            if kemeny_phys == np.inf:
-                # Every restart for this (A, pi_bar) pair failed or was
-                # rejected as numerically degenerate; resampling pi_bar alone
-                # is unlikely to help, so draw a fresh graph too.
-                print("  physical PGD failed for every init; resampling graph and pi_bar", flush=True)
-                A = erdos_renyi_graph(m, p, seed=int(rng.integers(1 << 31)))
+            # Every restart for this (A, pi_bar) pair either failed, was
+            # rejected as numerically degenerate, or converged to a poorly
+            # conditioned optimum; resample the graph and pi_bar together.
+            print(
+                f"  attempt {attempt + 1}/{max_kemeny_attempts}: K(P_bar*) = {kemeny_phys:.4f} > 1000; "
+                "resampling graph and pi_bar",
+                flush=True,
+            )
+        else:
+            raise RuntimeError(
+                f"graph {graph_idx + 1}/{n_graphs}: physical Kemeny optimization failed to reach "
+                f"K(P_bar*) <= 1000 after {max_kemeny_attempts} attempts"
+            )
         print(f"  Physical Kemeny optimum: K(P_bar*) = {kemeny_phys:.4f}", flush=True)
 
         # sparsity pattern of the optimized physical MC, used to build each lifted graph
@@ -1035,7 +1115,7 @@ def kemeny_lifting_budget_sweep(
         }
 
         results = {
-            name: {'budgets': [], 'diffs': [], 'kemeny_lift': [], 'V': [], 'Q_lift': [], 'iters_lift': []}
+            name: {'budgets': [], 'diffs': [], 'kemeny_lift': [], 'V': [], 'Q_lift': [], 'iters_lift': [], 'status': []}
             for name in lifting_method_names
         }
 
@@ -1046,26 +1126,14 @@ def kemeny_lifting_budget_sweep(
                 A_lift = V @ support @ V.T
                 lift_proj = make_project_Q(best_Q_bar, V)
 
-                best_Q_lift: np.ndarray | None = None
-                kemeny_lift = np.inf
-                best_n_iters_lift = 0
-                for _ in range(n_init):
-                    Q0_lift = random_chain(A_lift, seed=int(rng.integers(1 << 31)))
-                    try:
-                        Q0_lift = lift_proj(Q0_lift)
-                        Q_lift_opt, hist_lift, n_iters_lift = projected_gradient_descent(
-                            Q0_lift,
-                            lambda Q, _V=V, _pi=pi_bar: _grad_lifted_kemeny(Q, _V, _pi),
-                            lift_proj,
-                            alpha_lift, n_iter_lift, tol_lift,
-                        )
-                    except (np.linalg.LinAlgError, RuntimeError, cp.error.SolverError) as e:
-                        print(f"    [{name}] lifted PGD init failed ({e}); skipping", flush=True)
-                        continue
-                    if hist_lift and 0 < hist_lift[-1] < kemeny_lift:
-                        kemeny_lift = hist_lift[-1]
-                        best_Q_lift = Q_lift_opt
-                        best_n_iters_lift = n_iters_lift
+                kemeny_lift, best_Q_lift, best_n_iters_lift, n_success_lift, _ = _pgd_restarts(
+                    make_Q0=lambda seed, _A=A_lift: random_chain(_A, seed=seed),
+                    project_fn=lift_proj,
+                    grad_fn=lambda Q, _V=V, _pi=pi_bar: _grad_lifted_kemeny(Q, _V, _pi),
+                    alpha=alpha_lift, n_iter=n_iter_lift, tol=tol_lift,
+                    n_init=n_init, rng=rng, label=f"[{name}]", verbose=False,
+                    max_grad_norm=max_grad_norm_lift,
+                )
 
                 diff = kemeny_phys - kemeny_lift
                 print(
@@ -1080,6 +1148,7 @@ def kemeny_lifting_budget_sweep(
                     results[name]['kemeny_lift'].append(kemeny_lift)
                     results[name]['V'].append(V)
                     results[name]['Q_lift'].append(best_Q_lift)
+                    results[name]['status'].append('success')
                 else:
                     # Lifting underperformed the physical optimum: fall back to the
                     # (trivial) identity lifting of P_bar* rather than deploy a
@@ -1089,6 +1158,12 @@ def kemeny_lifting_budget_sweep(
                     results[name]['kemeny_lift'].append(kemeny_phys)
                     results[name]['V'].append(np.eye(m))
                     results[name]['Q_lift'].append(best_Q_bar)
+                    # 'all_failed' means every one of the (retried) PGD restarts
+                    # raised, so this fallback reflects a numerical failure, not a
+                    # genuine finding that no lifting helps -- distinct from
+                    # 'no_improvement', where PGD converged but simply found a
+                    # worse optimum than the physical baseline.
+                    results[name]['status'].append('no_improvement' if n_success_lift > 0 else 'all_failed')
                 results[name]['iters_lift'].append(best_n_iters_lift)
 
             best_name = max(
@@ -1205,10 +1280,10 @@ if __name__ == "__main__":
     m = 10
     kemeny_lifting_budget_sweep(
         m=m,
-        n_graphs=5,
+        n_graphs=20,
         p_range=(0.2, 0.8),
-        budget_values = [round(1.5*m), 2*m, round(2.5*m), 3*m, round(3.5*m)],
-        n_init=1,
+        budget_values = [round(1.25*m), round(1.5*m), round(1.75*m), 2*m, round(2.25*m), round(2.5*m), round(2.75*m), 3*m],
+        n_init=10,
         n_iter_phys=150,
         alpha_phys=2e-3,
         tol_phys=1e-5,

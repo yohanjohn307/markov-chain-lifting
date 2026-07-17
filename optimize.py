@@ -10,6 +10,7 @@ from markov import _check_mapping, _check_ergodic_flow, EQUALITY_ATOL, SUPPORT_A
 _SOLVER_TOL = EQUALITY_ATOL * 1e-3
 _DEFAULT_MAX_ITER = 10_000
 _PROJECTION_VIOLATION_TOL = 1e-4
+_LINSOLVE_REG = 1e-10
 
 
 def _clip_to_support(Q_value: np.ndarray, support: np.ndarray, epsilon: float) -> np.ndarray:
@@ -34,6 +35,19 @@ def _projection_violation(Q_value: np.ndarray | None, lower: np.ndarray, upper: 
     return max(box, row_col_gap)
 
 
+def _violation_tolerance(n: int, m: int) -> float:
+    """Size-aware feasibility tolerance for _projection_violation.
+
+    The row/col-sum gap it bounds is a sum of ~n independent per-entry
+    clipping corrections (see _projection_violation's docstring), so a fixed
+    absolute tolerance under-counts the drift that larger lifted state spaces
+    (larger n relative to the physical space m) structurally accumulate.
+    Scales _PROJECTION_VIOLATION_TOL by sqrt(n / m), which is 1 for the
+    unlifted physical case (n == m).
+    """
+    return _PROJECTION_VIOLATION_TOL * np.sqrt(n / m)
+
+
 def _solve_projection(
     prob: cp.Problem,
     warm_start: bool,
@@ -42,12 +56,13 @@ def _solve_projection(
     upper: np.ndarray,
     support: np.ndarray,
     epsilon: float,
+    tol: float,
     max_iter: int = _DEFAULT_MAX_ITER,
 ) -> tuple[np.ndarray | None, float]:
     """Solve a projection QP and clip the result, falling back to a cold start
     if warm-started OSQP stalls (status != optimal) or silently returns a point
-    that's infeasible -- either directly, or only after clipping -- beyond
-    _PROJECTION_VIOLATION_TOL. Returns (clipped_Q, violation) for the accepted attempt.
+    that's infeasible -- either directly, or only after clipping -- beyond tol
+    (see _violation_tolerance). Returns (clipped_Q, violation) for the accepted attempt.
     """
     def attempt() -> tuple[np.ndarray | None, float]:
         if Q.value is None:
@@ -57,7 +72,7 @@ def _solve_projection(
 
     prob.solve(solver=cp.OSQP, warm_start=warm_start, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL, max_iter=max_iter, polish=True)
     clipped, violation = attempt()
-    if warm_start and (prob.status != cp.OPTIMAL or violation > _PROJECTION_VIOLATION_TOL):
+    if warm_start and (prob.status != cp.OPTIMAL or violation > tol):
         prob.solve(solver=cp.OSQP, warm_start=False, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL, max_iter=max_iter, polish=True)
         clipped, violation = attempt()
     return clipped, violation
@@ -73,10 +88,21 @@ def make_project_Q(
 
     Builds the CVXPY problem once with cp.Parameter; each call updates the
     parameter and warm-starts the solver, eliminating per-call canonicalization.
+
+    epsilon must stay small: each of the (budget/m)^2-ish virtual sub-edges
+    within a physical (i, j) group is independently floored at epsilon * U,
+    but all of them must still sum to Q_bar[i, j] within EQUALITY_ATOL, so an
+    epsilon large enough to clear solver noise (_SOLVER_TOL) can make the box
+    and equality-band constraints genuinely infeasible for small Q_bar
+    entries at larger budgets -- confirmed empirically (raising the default
+    to 1e-3 made every restart at budget=3m/3.5m report status=infeasible).
+    The residual solver-noise-driven infeasibility this leaves at the default
+    1e-6 is instead absorbed by _violation_tolerance scaling with problem size.
     """
     _check_ergodic_flow(Q_bar, m=V.shape[1])
     _check_mapping(V)
     n = V.shape[0]
+    m = V.shape[1]
     Q_bar_ceil = (Q_bar > SUPPORT_ATOL).astype(int) # hardcoded to catch Stackelberg case where epsilon = 0
     U = V @ Q_bar_ceil @ V.T
     Q_tilde_p = cp.Parameter((n, n))
@@ -98,14 +124,15 @@ def make_project_Q(
 
     lower = epsilon * U
     upper = U
+    tol = _violation_tolerance(n, m)
 
     def project(Q_tilde: np.ndarray) -> np.ndarray:
         Q_tilde_p.value = Q_tilde
-        clipped, violation = _solve_projection(prob, warm_start=True, Q=Q, lower=lower, upper=upper, support=U, epsilon=epsilon, max_iter=max_iter)
-        if clipped is None or prob.status != cp.OPTIMAL or violation > _PROJECTION_VIOLATION_TOL:
+        clipped, violation = _solve_projection(prob, warm_start=True, Q=Q, lower=lower, upper=upper, support=U, epsilon=epsilon, tol=tol, max_iter=max_iter)
+        if clipped is None or prob.status != cp.OPTIMAL or violation > tol:
             raise RuntimeError(
                 f"project_Q: QP did not converge to a feasible point (status={prob.status}, "
-                f"violation={violation:.3e}); check that Q_bar is a valid ergodic flow for V"
+                f"violation={violation:.3e}, tol={tol:.3e}); check that Q_bar is a valid ergodic flow for V"
             )
         return clipped
 
@@ -123,6 +150,8 @@ def make_project_Q_bar(
     Builds the CVXPY problem once with cp.Parameter; each call updates the
     parameter and warm-starts the solver, eliminating per-call canonicalization.
     adj is the graph adjacency matrix.
+
+    See make_project_Q's docstring for why epsilon must stay small.
     """
     m = A.shape[0]
     Q_tilde_p = cp.Parameter((m, m))
@@ -137,14 +166,15 @@ def make_project_Q_bar(
 
     lower = epsilon * A
     upper = A
+    tol = _violation_tolerance(m, m)  # unlifted physical case: n == m
 
     def project(Q_tilde: np.ndarray) -> np.ndarray:
         Q_tilde_p.value = Q_tilde
-        clipped, violation = _solve_projection(prob, warm_start=True, Q=Q, lower=lower, upper=upper, support=A, epsilon=epsilon, max_iter=max_iter)
-        if clipped is None or prob.status != cp.OPTIMAL or violation > _PROJECTION_VIOLATION_TOL:
+        clipped, violation = _solve_projection(prob, warm_start=True, Q=Q, lower=lower, upper=upper, support=A, epsilon=epsilon, tol=tol, max_iter=max_iter)
+        if clipped is None or prob.status != cp.OPTIMAL or violation > tol:
             raise RuntimeError(
                 f"project_Q_bar: QP did not converge to a feasible point (status={prob.status}, "
-                f"violation={violation:.3e}); check inputs are consistent"
+                f"violation={violation:.3e}, tol={tol:.3e}); check inputs are consistent"
             )
         return clipped
 
@@ -161,6 +191,7 @@ def _grad_kemeny(Q_bar: np.ndarray, W: np.ndarray | None = None) -> tuple[float,
         W = np.ones((m, m))
     pi_bar = Q_bar.sum(axis=1)
     Pi_bar = np.diag(pi_bar)
+    reg = _LINSOLVE_REG * np.eye(m)
     rhs = (Q_bar * W).sum(axis=1)
     K_val = 0.0
     grad = np.zeros((m, m))
@@ -168,8 +199,8 @@ def _grad_kemeny(Q_bar: np.ndarray, W: np.ndarray | None = None) -> tuple[float,
         gamma_j = np.ones(m)
         gamma_j[j] = 0
         Gamma_j = np.diag(gamma_j)
-        m_j     = np.linalg.solve(Pi_bar - Q_bar @ Gamma_j, rhs)
-        lam_j   = -pi_bar[j] * np.linalg.solve(Pi_bar - Gamma_j @ Q_bar.T, pi_bar)
+        m_j     = np.linalg.solve(Pi_bar - Q_bar @ Gamma_j + reg, rhs)
+        lam_j   = -pi_bar[j] * np.linalg.solve(Pi_bar - Gamma_j @ Q_bar.T + reg, pi_bar)
         K_val += pi_bar[j] * (pi_bar @ m_j)
         grad -= np.outer(lam_j, m_j) @ Gamma_j + np.outer(lam_j, np.ones(m)) * W
     return K_val, grad
@@ -186,6 +217,7 @@ def _grad_lifted_kemeny(Q: np.ndarray, V: np.ndarray, pi_bar: np.ndarray, W: np.
     pi   = Q.sum(axis=1)
     Pi   = np.diag(pi)
     In   = np.eye(n)
+    reg  = _LINSOLVE_REG * In
     rhs  = (Q * W).sum(axis=1)
     K_lift_val = 0.0
     grad  = np.zeros((n, n))
@@ -193,8 +225,8 @@ def _grad_lifted_kemeny(Q: np.ndarray, V: np.ndarray, pi_bar: np.ndarray, W: np.
         D_j   = np.diag(V[:, j])
         I_Dj  = In - D_j
         pib_j = float(pi_bar[j])
-        m_Sj  = np.linalg.solve(Pi - Q @ I_Dj, rhs)            # forward solve, Eq. (21)
-        lam_j = np.linalg.solve(Pi - I_Dj @ Q.T, -pib_j * pi)  # adjoint solve, Eq. (37)
+        m_Sj  = np.linalg.solve(Pi - Q @ I_Dj + reg, rhs)            # forward solve, Eq. (21)
+        lam_j = np.linalg.solve(Pi - I_Dj @ Q.T + reg, -pib_j * pi)  # adjoint solve, Eq. (37)
         u_j   = (pib_j * In + np.diag(lam_j)) @ m_Sj
         K_lift_val += pib_j * float(pi @ m_Sj)
         grad  += np.outer(u_j, np.ones(n)) - np.outer(lam_j, np.ones(n)) * W - np.outer(lam_j, m_Sj) @ I_Dj  # Eq. (36)
@@ -363,6 +395,7 @@ def projected_gradient_descent(
     n_iter: int = 100,
     tol: float = 1e-6,
     temp_schedule=None,
+    max_grad_norm: float | None = None,
 ) -> tuple[np.ndarray, list[float], int]:
     """Minimize an objective via projected gradient descent.
 
@@ -404,6 +437,18 @@ def projected_gradient_descent(
           temp_schedule=lambda k: temp0 * decay ** k,
       )
 
+    max_grad_norm, if given, clips the gradient's Frobenius norm to at most
+    this value (preserving direction) before taking the step. Near-zero
+    stationary mass on a state (more likely at larger lifting budgets or
+    skewed liftings) can make _grad_kemeny/_grad_lifted_kemeny's adjoint
+    linear solves severely ill-conditioned, producing gradient norms many
+    orders of magnitude above the typical range (~1e2-1e3 for these Kemeny
+    problems); an unclipped step of that size sends Q_tilde far outside the
+    feasible region, and projecting it back is what makes project_fn raise
+    (or silently return something barely feasible) -- clipping the norm
+    fixes this at the source rather than only patching the projection's
+    feasibility check.
+
     Returns (final Q, history of objective values, number of iterations run).
     history[-1] always equals the objective value at the returned Q. The
     iteration count is the number of gradient+projection steps actually taken:
@@ -418,6 +463,10 @@ def projected_gradient_descent(
         if len(history) > 1 and abs(history[-1] - history[-2]) < tol:
             n_iters = k
             break
+        if max_grad_norm is not None:
+            grad_norm = np.linalg.norm(grad)
+            if grad_norm > max_grad_norm:
+                grad = grad * (max_grad_norm / grad_norm)
         Q_tilde = Q - alpha * grad
         Q = project_fn(Q_tilde)
     else:
