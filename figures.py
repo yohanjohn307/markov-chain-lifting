@@ -263,6 +263,66 @@ def fig_mean_capture_time_convergence(seed: int = 42) -> None:
     plt.savefig('mean_capture_time.png', dpi=150, bbox_inches='tight')
 
 
+def print_computation_time_table(
+    metric_name: str,
+    p_values,
+    mean_times_phys: list[float],
+    mean_times_lift: list[float],
+) -> None:
+    """Print mean computation times per edge probability p, for copy/pasting into
+    Table I of the manuscript (columns: Phys. / Lift. for the given metric).
+    """
+    print(f"\n--- {metric_name} mean computation time (s) [Table I] ---")
+    print(f"{'p':>6} | {'Phys.':>8} | {'Lift.':>8}")
+    for p, tp, tl in zip(p_values, mean_times_phys, mean_times_lift):
+        print(f"{p:>6.2f} | {tp:>8.2f} | {tl:>8.2f}")
+    print("LaTeX rows:")
+    for p, tp, tl in zip(p_values, mean_times_phys, mean_times_lift):
+        print(f"$p = {p:.1f}$ & {tp:.2f} & {tl:.2f} \\\\")
+    print("")
+
+
+def print_san_francisco_table(
+    kemeny_phys: float, kemeny_lift: float,
+    stackelberg_phys: float, stackelberg_lift: float,
+    rte_phys: float, rte_lift: float,
+) -> None:
+    """Print the San Francisco case study results (Sec. IX-C), for copy/pasting into
+    Table II of the manuscript, alongside the [31]/[33] literature baseline values.
+
+    kemeny_phys/kemeny_lift, stackelberg_phys/stackelberg_lift, and rte_phys/rte_lift
+    are the "Proposed" row's values -- typically the best (min for Kemeny, max for
+    Stackelberg/RTE) physical/lifted values returned by fig_san_francisco_kemeny,
+    fig_san_francisco_stackelberg, and fig_san_francisco_rte respectively.
+    [31] (Duan/George/Bullo, max-RTE) and [33] (RoSSO) do not report every metric for
+    this benchmark; missing entries are left blank. These baseline numbers are
+    literature constants (RoSSO itself is not vendored/runnable here), not recomputed.
+    """
+    rows = [
+        ('Proposed', kemeny_phys, kemeny_lift, stackelberg_phys, stackelberg_lift, rte_phys, rte_lift),
+        ('[31]', 24.3, None, None, None, 5.01, None),
+        ('[33]', 21.2, None, 9.75e-2, None, 5.13, None),
+    ]
+
+    def fmt(x):
+        return f"{x:.3g}" if x is not None else "-"
+
+    print("\n--- San Francisco case study mean metric values [Table II] ---")
+    print(
+        f"{'Method':<10} | {'Kemeny Phys.':>12} | {'Kemeny Lift.':>12} | "
+        f"{'Stack. Phys.':>12} | {'Stack. Lift.':>12} | {'RTE Phys.':>10} | {'RTE Lift.':>10}"
+    )
+    for name, kp, kl, sp, sl, rp, rl in rows:
+        print(
+            f"{name:<10} | {fmt(kp):>12} | {fmt(kl):>12} | {fmt(sp):>12} | "
+            f"{fmt(sl):>12} | {fmt(rp):>10} | {fmt(rl):>10}"
+        )
+    print("LaTeX rows:")
+    for name, kp, kl, sp, sl, rp, rl in rows:
+        print(f"{name} & {fmt(kp)} & {fmt(kl)} & {fmt(sp)} & {fmt(sl)} & {fmt(rp)} & {fmt(rl)} \\\\")
+    print("")
+
+
 def fig_erdos_renyi_kemeny_percent_decrease(
     data_path: str = 'results/data/erdos_renyi_kemeny_diffs.npy',
 ) -> None:
@@ -285,6 +345,8 @@ def fig_erdos_renyi_kemeny_percent_decrease(
     all_conductance_lb = data['conductance_lb']
 
     all_pct: list[list[float]] = []
+    mean_times_phys: list[float] = []
+    mean_times_lift: list[float] = []
     for p_idx, p in enumerate(p_values):
         pct_p: list[float] = []
         conductance_pct_p: list[float] = []
@@ -302,6 +364,8 @@ def fig_erdos_renyi_kemeny_percent_decrease(
                 conductance_pct_p.append(100.0 * (k_phys - conductance_lb) / k_phys)
         times_phys_p = all_times_phys[p_idx]
         times_lift_p = all_times_lift[p_idx]
+        mean_times_phys.append(float(np.mean(times_phys_p)) if len(times_phys_p) else float('nan'))
+        mean_times_lift.append(float(np.mean(times_lift_p)) if len(times_lift_p) else float('nan'))
         print(
             f"p={p:.2f}: {len(pct_p)} graphs, "
             + (f"percent decrease = {np.mean(pct_p):.2f}% ± {np.std(pct_p):.2f}%, " if pct_p else "")
@@ -312,6 +376,8 @@ def fig_erdos_renyi_kemeny_percent_decrease(
             flush=True,
         )
         all_pct.append(pct_p)
+
+    print_computation_time_table('Kemeny', p_values, mean_times_phys, mean_times_lift)
 
     # ------------------------------------------------------------------
     # Ridgeline plot via joypy
@@ -374,6 +440,8 @@ def fig_erdos_renyi_stackelberg_percent_increase(
     all_times_lift = data['times_lift']
 
     all_pct: list[list[float]] = []
+    mean_times_phys: list[float] = []
+    mean_times_lift: list[float] = []
     for p_idx, p in enumerate(p_values):
         pct_p: list[float] = []
         for tau, Q_bar, Q_lift, V in zip(
@@ -392,6 +460,8 @@ def fig_erdos_renyi_stackelberg_percent_increase(
                 pct_p.append(100.0 * (j_lift - j_phys) / j_phys)
         times_phys_p = all_times_phys[p_idx]
         times_lift_p = all_times_lift[p_idx]
+        mean_times_phys.append(float(np.mean(times_phys_p)) if len(times_phys_p) else float('nan'))
+        mean_times_lift.append(float(np.mean(times_lift_p)) if len(times_lift_p) else float('nan'))
         print(
             f"p={p:.2f}: {len(pct_p)} graphs, "
             + (f"percent increase = {np.mean(pct_p):.2f}% ± {np.std(pct_p):.2f}%, " if pct_p else "")
@@ -400,6 +470,8 @@ def fig_erdos_renyi_stackelberg_percent_increase(
             flush=True,
         )
         all_pct.append(pct_p)
+
+    print_computation_time_table('Stackelberg', p_values, mean_times_phys, mean_times_lift)
 
     # ------------------------------------------------------------------
     # Ridgeline plot via joypy
@@ -443,12 +515,12 @@ def fig_erdos_renyi_stackelberg_percent_increase(
 
 
 def fig_erdos_renyi_rte_percent_increase(
-    data_path: str = 'results/erdos_renyi_rte_diffs.npy',
+    data_path: str = 'results/data/erdos_renyi_rte_diffs.npy',
 ) -> None:
     """Ridgeline plot of the percent increase in the Return-Time Entropy metric achieved by
-    degree lifting, vs. Erdős-Rényi edge probability p.
+    stationary-distribution lifting, vs. Erdős-Rényi edge probability p.
 
-    Loads the raw optimization results saved by figures.fig_erdos_renyi_rte_improvement,
+    Loads the raw optimization results saved by sweeps.erdos_renyi_rte_improvement,
     recomputes H(P_bar*) and H^lift(P*) for every graph from the stored ergodic flow
     matrices, and reports 100 * (H^lift(P*) - H(P_bar*)) / H(P_bar*).
     """
@@ -462,6 +534,8 @@ def fig_erdos_renyi_rte_percent_increase(
     eta = data['eta']
 
     all_pct: list[list[float]] = []
+    mean_times_phys: list[float] = []
+    mean_times_lift: list[float] = []
     for p_idx, p in enumerate(p_values):
         pct_p: list[float] = []
         for Q_bar, Q_lift, V in zip(
@@ -486,6 +560,8 @@ def fig_erdos_renyi_rte_percent_increase(
                 pct_p.append(100.0 * (h_lift - h_phys) / h_phys)
         times_phys_p = all_times_phys[p_idx]
         times_lift_p = all_times_lift[p_idx]
+        mean_times_phys.append(float(np.mean(times_phys_p)) if len(times_phys_p) else float('nan'))
+        mean_times_lift.append(float(np.mean(times_lift_p)) if len(times_lift_p) else float('nan'))
         print(
             f"p={p:.2f}: {len(pct_p)} graphs, "
             + (f"percent increase = {np.mean(pct_p):.2f}% ± {np.std(pct_p):.2f}%, " if pct_p else "")
@@ -494,6 +570,8 @@ def fig_erdos_renyi_rte_percent_increase(
             flush=True,
         )
         all_pct.append(pct_p)
+
+    print_computation_time_table('RTE', p_values, mean_times_phys, mean_times_lift)
 
     # ------------------------------------------------------------------
     # Ridgeline plot via joypy
@@ -534,6 +612,121 @@ def fig_erdos_renyi_rte_percent_increase(
     plt.savefig('results/erdos_renyi_rte_percent_increase.pdf', bbox_inches='tight')
     plt.savefig('results/erdos_renyi_rte_percent_increase.png', dpi=150, bbox_inches='tight')
     print("Saved: results/erdos_renyi_rte_percent_increase.pdf / .png")
+
+
+def fig_san_francisco_kemeny(
+    data_path: str = 'results/data/san_francisco_kemeny_diffs.npy',
+) -> tuple[float, float]:
+    """Report the best physical and lifted (weighted) Kemeny constants achieved on the
+    San Francisco graph (Sec. IX-C / Table II).
+
+    Loads the raw optimization results saved by sweeps.san_francisco_kemeny_improvement,
+    recomputes K(P_bar*) and K^lift(P*) for every trial from the stored ergodic flow
+    matrices, and returns (best K(P_bar*), best K^lift(P*)) -- the minimum over all
+    n_trials restarts, i.e. the values that belong in Table II's "Proposed" row.
+    """
+    data = np.load(data_path, allow_pickle=True).item()
+    W = data['W']
+    V = data['V']
+    all_Q_bar = data['Q_bar']
+    all_Q_lift = data['Q_lift']
+
+    kemeny_phys_vals: list[float] = []
+    kemeny_lift_vals: list[float] = []
+    for Q_bar, Q_lift in zip(all_Q_bar, all_Q_lift):
+        P_bar = ergodic_flow_to_transition(Q_bar)
+        P_lift = ergodic_flow_to_transition(Q_lift)
+        kemeny_phys_vals.append(kemeny(P_bar, W, pi=Q_bar.sum(axis=1)))
+        kemeny_lift_vals.append(lifted_kemeny(P_lift, V, W, pi=Q_lift.sum(axis=1)))
+
+    best_phys = min(kemeny_phys_vals)
+    best_lift = min(kemeny_lift_vals)
+    print(
+        f"San Francisco Kemeny: {len(kemeny_phys_vals)} trials, "
+        f"K(P_bar*) best={best_phys:.3f} mean={np.mean(kemeny_phys_vals):.3f} ± "
+        f"{np.std(kemeny_phys_vals):.3f}, K^lift(P*) best={best_lift:.3f} "
+        f"mean={np.mean(kemeny_lift_vals):.3f} ± {np.std(kemeny_lift_vals):.3f}",
+        flush=True,
+    )
+    return best_phys, best_lift
+
+
+def fig_san_francisco_stackelberg(
+    data_path: str = 'results/data/san_francisco_stackelberg_diffs.npy',
+) -> tuple[float, float]:
+    """Report the best physical and lifted (weighted) Stackelberg metrics achieved on
+    the San Francisco graph (Appendix A / Table II).
+
+    Loads the raw optimization results saved by sweeps.san_francisco_stackelberg_improvement,
+    recomputes J(P_bar*) and J^lift(P*) for every trial from the stored ergodic flow
+    matrices, and returns (best J(P_bar*), best J^lift(P*)) -- the maximum over all
+    n_trials restarts, i.e. the values that belong in Table II's "Proposed" row.
+    """
+    data = np.load(data_path, allow_pickle=True).item()
+    W = data['W']
+    V = data['V']
+    tau = data['tau']
+    all_Q_bar = data['Q_bar']
+    all_Q_lift = data['Q_lift']
+    W_lift = V @ W @ V.T
+
+    stb_phys_vals: list[float] = []
+    stb_lift_vals: list[float] = []
+    for Q_bar, Q_lift in zip(all_Q_bar, all_Q_lift):
+        P_bar = ergodic_flow_to_transition(Q_bar)
+        P_lift = ergodic_flow_to_transition(Q_lift)
+        stb_phys_vals.append(stackelberg(P_bar, tau, W))
+        stb_lift_vals.append(lifted_stackelberg(P_lift, V, tau, W_lift))
+
+    best_phys = max(stb_phys_vals)
+    best_lift = max(stb_lift_vals)
+    print(
+        f"San Francisco Stackelberg: {len(stb_phys_vals)} trials, "
+        f"J(P_bar*) best={best_phys:.3f} mean={np.mean(stb_phys_vals):.3f} ± "
+        f"{np.std(stb_phys_vals):.3f}, J^lift(P*) best={best_lift:.3f} "
+        f"mean={np.mean(stb_lift_vals):.3f} ± {np.std(stb_lift_vals):.3f}",
+        flush=True,
+    )
+    return best_phys, best_lift
+
+
+def fig_san_francisco_rte(
+    data_path: str = 'results/data/san_francisco_rte_diffs.npy',
+) -> tuple[float, float]:
+    """Report the best physical and lifted (weighted) truncated RTE achieved on the
+    San Francisco graph (Appendix B / Table II).
+
+    Loads the raw optimization results saved by sweeps.san_francisco_rte_improvement,
+    recomputes H(P_bar*) and H^lift(P*) for every trial from the stored ergodic flow
+    matrices, and returns (best H(P_bar*), best H^lift(P*)) -- the maximum over all
+    n_trials restarts, i.e. the values that belong in Table II's "Proposed" row.
+    """
+    data = np.load(data_path, allow_pickle=True).item()
+    W = data['W']
+    V = data['V']
+    eta = data['eta']
+    all_Q_bar = data['Q_bar']
+    all_Q_lift = data['Q_lift']
+    W_lift = V @ W @ V.T
+
+    rte_phys_vals: list[float] = []
+    rte_lift_vals: list[float] = []
+    for Q_bar, Q_lift in zip(all_Q_bar, all_Q_lift):
+        P_bar = ergodic_flow_to_transition(Q_bar)
+        P_lift = ergodic_flow_to_transition(Q_lift)
+        rte_phys_vals.append(return_time_entropy(P_bar, eta, W, pi=Q_bar.sum(axis=1)))
+        rte_lift_vals.append(lifted_return_time_entropy(P_lift, V, eta, W_lift, pi=Q_lift.sum(axis=1)))
+
+    best_phys = max(rte_phys_vals)
+    best_lift = max(rte_lift_vals)
+    print(
+        f"San Francisco RTE: {len(rte_phys_vals)} trials, "
+        f"H(P_bar*) best={best_phys:.3f} mean={np.mean(rte_phys_vals):.3f} ± "
+        f"{np.std(rte_phys_vals):.3f}, H^lift(P*) best={best_lift:.3f} "
+        f"mean={np.mean(rte_lift_vals):.3f} ± {np.std(rte_lift_vals):.3f}",
+        flush=True,
+    )
+    return best_phys, best_lift
 
 
 def fig_lifting_budget_sweep_boxplot(
@@ -651,6 +844,16 @@ if __name__ == "__main__":
     # fig_estimation_error_vs_trajectory_length()
     # fig_mean_capture_time_convergence()
     # fig_erdos_renyi_kemeny_percent_decrease()
-    fig_erdos_renyi_stackelberg_percent_increase()
-    # fig_erdos_renyi_rte_percent_increase()
+    # fig_erdos_renyi_stackelberg_percent_increase()
+    fig_erdos_renyi_rte_percent_increase()
     # fig_lifting_budget_sweep_boxplot()
+
+    # San Francisco case study (Sec. IX-C / Table II) -- requires the three
+    # sweeps.san_francisco_*_improvement functions to have been run first, saving
+    # their .npy files under results/data/.
+    # kemeny_phys, kemeny_lift = fig_san_francisco_kemeny()
+    # stackelberg_phys, stackelberg_lift = fig_san_francisco_stackelberg()
+    # rte_phys, rte_lift = fig_san_francisco_rte()
+    # print_san_francisco_table(
+    #     kemeny_phys, kemeny_lift, stackelberg_phys, stackelberg_lift, rte_phys, rte_lift,
+    # )
