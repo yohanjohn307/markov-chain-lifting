@@ -711,19 +711,19 @@ def erdos_renyi_rte_improvement(
 def san_francisco_kemeny_improvement(
     w_max: int | None = None,
     n_trials: int = 10,
-    n_init: int = 5,
+    n_init: int = 3,
     n_iter_phys: int = 150,
-    alpha_phys: float = 1e-3,
-    tol_phys: float = 1e-6,
-    n_iter_lift: int = 50,
-    alpha_lift: float = 1e-3,
-    tol_lift: float = 1e-6,
+    alpha_phys: float = 4e-3,
+    tol_phys: float = 1e-5,
+    n_iter_lift: int = 150,
+    alpha_lift: float = 2e-2,
+    tol_lift: float = 1e-5,
     max_grad_norm_phys: float | None = 2000.0,
-    max_grad_norm_lift: float | None = 200.0,
+    max_grad_norm_lift: float | None = 500.0,
     seed: int = 42,
     save_path: str = 'results/data/san_francisco_kemeny_diffs.npy',
 ) -> None:
-    """Kemeny improvement via degree lifting on the San Francisco graph (Sec. VII).
+    """Kemeny improvement via stationary-distribution lifting on the San Francisco graph (Sec. VII).
 
     Unlike erdos_renyi_kemeny_improvement, the graph, travel-time weights W,
     and target stationary distribution pi_bar are all fixed real-world data from
@@ -737,44 +737,78 @@ def san_francisco_kemeny_improvement(
     Kemeny constants:
       1. Optimises the weighted Kemeny constant in the physical space via PGD
          (n_init successful starts), for pi_bar fixed.
-      2. Applies degree lifting and optimises the weighted lifted Kemeny constant
-         via PGD (n_init successful starts).
-      3. Records K(P_bar*) - K^lift(P*).
-    max_grad_norm_phys/max_grad_norm_lift default to the same values tuned for
-    erdos_renyi_kemeny_improvement (2000/200): both sweeps share the same
-    _grad_kemeny/_grad_lifted_kemeny adjoint-solve machinery, whose near-zero-
-    stationary-mass ill-conditioning these clip against, so the ER-tuned values
-    transfer directly.
-    Benchmarked on the full (w_max=None) complete graph: the physical stage is
-    fast and reliable (a single PGD run of n_iter_phys=150 took ~1.2s, converging
-    in ~38 iterations to K(P_bar*) ~= 23, already close to the [31]/[33]
-    literature baselines of 24.3/21.2 -- see Table II).
-    The lifted stage is a different story: make_project_Q's QP at the full
-    degree_lifting budget (132 virtual states for this 12-node complete graph)
-    took 40-90s per solve attempt in benchmarking, and across 32 attempts
-    (20 random initial chains at the default epsilon=1e-6, plus 6 more at each
-    of epsilon=1e-5 and 1e-4) not one reached feasibility -- so this is not a
-    PGD-hyperparameter problem (no alpha/tol/n_init/epsilon combination tested
-    got PGD started at all), but a scale limitation of this QP formulation at
-    n=132 that no setting of the parameters below can route around.
-    n_iter_lift is kept modest since a run that does eventually find a feasible
-    start is not expected to benefit from a larger budget more than it costs;
-    alpha_lift/tol_lift are left at their pre-existing values since no
-    convergence data could be collected to retune them. Passing w_max to prune
-    the graph shrinks the degree_lifting budget (e.g. w_max=6 gives 113 states
-    instead of 132) and is the only lever here that changes the QP's size, but
-    note pruning did not fully eliminate infeasibility in testing either (the
-    *physical* stage also hit mid-optimization projection failures at w_max=6)
-    -- so treat the lifted stage of this function as unreliable at any budget
-    tested so far, and expect san_francisco_stackelberg_improvement's lifted
-    stage (which uses epsilon=0 and is dramatically cheaper/more reliable at
-    the same n=132) to remain the practical one of the three for this graph.
+      2. Applies stationary-distribution lifting (budget=2*m, matching
+         erdos_renyi_kemeny_improvement) and optimises the weighted lifted
+         Kemeny constant via PGD (n_init successful starts).
+      3. Records K(P_bar*) - K^lift(P*), along with a 'status' of 'success'
+         (diff > 0), 'no_improvement' (PGD converged but found no better
+         optimum than the physical baseline), or 'all_failed' (every retried
+         lifted restart raised) -- matching erdos_renyi_kemeny_improvement's
+         status bookkeeping. Unlike that sweep, a non-improving trial's
+         Q_lift/V are *not* swapped for an identity-lifting fallback: the
+         actually-optimized lifted chain is always what gets recorded, and
+         there is no conductance-bound bookkeeping here either.
+    This function was previously built around degree lifting at the *full*
+    lifting budget (132 virtual states for this 12-node complete graph), which
+    made the lifted-stage projection QP (make_project_Q at epsilon=1e-6)
+    essentially infeasible in practice (40-90s per solve attempt, 0/32 tested
+    attempts converged). Switching to stationary lifting at budget=2*m=24 --
+    matching erdos_renyi_kemeny_improvement's own default budget -- resolved
+    this: the lifted QP is now feasible from a random init in the large
+    majority of attempts and each PGD run over it takes ~1-4s.
+    Hyperparameters were then tuned specifically for this graph (starting from,
+    but not simply copying, erdos_renyi_kemeny_improvement's defaults), via a
+    grid sweep over ~10 seeds per setting:
+      - alpha_phys=4e-3 (up from ER's 2e-3): among {1e-3, 2e-3, 5e-3, 1e-2, 2e-2}
+        this reached the lowest mean K(P_bar*) (~22.5 vs ~22.6-22.8 for
+        neighboring values) in the fewest iterations (~32 mean, max 111 over 10
+        seeds, comfortably inside n_iter_phys=150), with no divergence; 1e-2
+        started requiring many more iterations to stabilize and 2e-2
+        occasionally diverged outright.
+      - alpha_lift=2e-2 (up 10x from ER's 2e-3): unlike the physical stage, the
+        lifted objective was still improving at every alpha in {5e-4 ... 1e-2}
+        after the full n_iter_lift budget rather than hitting the tol
+        early-stop, so larger steps directly bought a better K^lift; 2e-2 gave
+        both a good mean K^lift and, notably, the tightest run-to-run spread
+        (std ~0.01-0.02 across 8 seeds, at both n_iter_lift=150 and 300 --
+        confirming 150 is enough), whereas 1e-2 and 5e-2 were also competitive
+        on the mean but less consistent.
+      - max_grad_norm_lift=500 (up from ER's 200): a sweep over
+        {50, 100, 200, 500, 1000, None} at fixed alpha_lift showed quality and
+        per-attempt reliability improving monotonically from 50 up through
+        1000 (mean K^lift 21.77 -> 21.57, mean failures/trial 2.12 -> 2.00),
+        while None (unclipped) reliably failed to reach n_init successes at
+        all (0/8 trials reached n_init=3, 2/8 got zero successes) --
+        reconfirming the clipping rationale from erdos_renyi_kemeny_improvement
+        while landing on a looser cap than ER needed.
+      - The lifted stage's per-restart-attempt failure rate on this graph
+        (QP infeasibility hit mid-PGD, not just at init) is non-trivial even
+        after the above tuning -- roughly 2 failures per 3 successes at
+        max_grad_norm_lift=200, dropping only modestly at 500. Combined with
+        _pgd_restarts' default max_attempts=2*n_init, this left most trials
+        short of n_init=3 successful restarts (n_success averaging ~2.5-2.75/3,
+        with restart-budget shortfalls in 20-60% of trials depending on
+        max_grad_norm_lift, though a full n_success=0 was never observed at
+        max_grad_norm_lift>=200). Bumping the lifted _pgd_restarts call's
+        max_attempts to 4*n_init (reinstating, but now for a measured reason
+        rather than as a leftover workaround, the override this function used
+        before the lifting-method change above) eliminated the shortfall
+        entirely (0/10 trials fell short of n_init=3 at max_attempts=12, vs.
+        5/10 at the default 6); n_init itself, and alpha_phys/alpha_lift's
+        matching tol_phys/tol_lift=1e-5, were left at ER's values since
+        neither showed a tuning benefit here.
+    Benchmarked on the full (w_max=None) complete graph at these tuned
+    settings: the physical stage remains fast (K(P_bar*) ~= 22.3-22.7 depending
+    on init, close to the [31]/[33] literature baselines of 24.3/21.2 -- see
+    Table II) and the lifted stage now reliably beats it (K^lift(P*) ~= 21.5-
+    21.6 in testing), a materially larger and more consistent improvement than
+    before this tuning pass.
     """
     A, W, pi_bar = san_francisco_graph()
     if w_max is not None:
         A = prune_long_edges(A, W, threshold=w_max)
-    A_off = A - np.diag(np.diag(A))
-    V = degree_lifting(A, budget=int(np.maximum(A_off.sum(1), A_off.sum(0)).sum()))
+    m = A.shape[0]
+    V = stationary_lifting(pi_bar, budget=2 * m)
     print(f"San Francisco graph: {A.shape[0]} nodes, {A.sum()} edges, {V.shape[0]} lifted states", flush=True)
     W_lift = V @ W @ V.T
 
@@ -783,12 +817,15 @@ def san_francisco_kemeny_improvement(
     grad_kemeny = lambda Q, _W=W: _grad_kemeny(Q, _W)
 
     diffs: list[float] = []
+    kemeny_phys_list: list[float] = []
+    kemeny_lift_list: list[float] = []
     Q_bar_list: list[np.ndarray] = []
     Q_lift_list: list[np.ndarray] = []
     times_phys: list[float] = []
     times_lift: list[float] = []
     iters_phys_list: list[int] = []
     iters_lift_list: list[int] = []
+    status_list: list[str] = []
 
     for t in range(n_trials):
         _t0_phys = time.perf_counter()
@@ -826,14 +863,16 @@ def san_francisco_kemeny_improvement(
             )
 
         diff = kemeny_phys - kemeny_lift
-        if kemeny_phys > 0 and kemeny_lift > 0:
-            diffs.append(max(diff, 0.0))
-            Q_bar_list.append(best_Q_bar)
-            Q_lift_list.append(best_Q_lift)
-            times_phys.append(_t1_phys - _t0_phys)
-            times_lift.append(_t1_lift - _t0_lift)
-            iters_phys_list.append(best_n_iters_phys)
-            iters_lift_list.append(best_n_iters_lift)
+        diffs.append(max(diff, 0.0))
+        kemeny_phys_list.append(kemeny_phys)
+        kemeny_lift_list.append(kemeny_lift)
+        Q_bar_list.append(best_Q_bar)
+        Q_lift_list.append(best_Q_lift)
+        times_phys.append(_t1_phys - _t0_phys)
+        times_lift.append(_t1_lift - _t0_lift)
+        iters_phys_list.append(best_n_iters_phys)
+        iters_lift_list.append(best_n_iters_lift)
+        status_list.append('success' if diff > 0 else ('no_improvement' if n_success_lift > 0 else 'all_failed'))
 
         print(
             f"trial {t+1}/{n_trials}: K(P_bar*)={kemeny_phys:.3f}, "
@@ -848,17 +887,27 @@ def san_francisco_kemeny_improvement(
         flush=True,
     )
 
+    if kemeny_lift_list:
+        best_idx = int(np.argmin(kemeny_lift_list))
+        print(
+            f"Best lifted MC: K^lift(P*)={kemeny_lift_list[best_idx]:.3f} "
+            f"(trial {best_idx + 1}/{n_trials}), corresponding physical MC: "
+            f"K(P_bar*)={kemeny_phys_list[best_idx]:.3f}",
+            flush=True,
+        )
+
     # Save raw data so the plot can be re-rendered without re-running optimization
     np.save(save_path,
             {'diffs': diffs, 'V': V, 'A': A, 'W': W, 'pi_bar': pi_bar,
              'Q_bar': Q_bar_list, 'Q_lift': Q_lift_list,
              'times_phys': times_phys, 'times_lift': times_lift,
-             'iters_phys': iters_phys_list, 'iters_lift': iters_lift_list},
+             'iters_phys': iters_phys_list, 'iters_lift': iters_lift_list,
+             'status': status_list},
             allow_pickle=True)  # type: ignore[arg-type]
 
 
 def san_francisco_stackelberg_improvement(
-    tau: int | np.ndarray,
+    heterogeneous_tau: bool = False,
     w_max: int | None = None,
     n_trials: int = 10,
     n_init: int = 3,
@@ -896,20 +945,28 @@ def san_francisco_stackelberg_improvement(
       2. Applies degree lifting and maximises the weighted lifted Stackelberg
          metric J^lift via PGD (n_init successful starts, epsilon=0).
       3. Records J^lift(P*) - J(P_bar*).
-    tau[j] is the attack duration at physical node j (Eq. 38); pass either a
-    scalar (broadcast to every node) or an array of length m = A.shape[0] = 12.
-    A natural choice is the weighted diameter of the graph actually being
-    optimized (pruned if w_max is given, complete otherwise), i.e. the longest
-    shortest travel time between any pair of nodes, which is the smallest attack
-    duration guaranteeing nonzero capture probability from any node to any
-    other. The softmin temperature is annealed geometrically from temp0 to
+    tau[j] is the attack duration at physical node j (Eq. 38). To keep results
+    directly comparable to the RoSSO paper's own Table III / Fig. 2 benchmarks
+    (Sec. IV-A), tau is not a free input but one of two fixed scenarios RoSSO
+    itself evaluated on this exact graph, selected via heterogeneous_tau:
+      - False (default): tau = 9 at every node (Fig. 2c), the worst-case
+        uniform attack duration with nonzero capture probability from any
+        node to any other. RoSSO reports J_SG = 9.75e-2 for this case (the
+        [33] baseline row in Table II).
+      - True: tau = [8, 6, 11, 10, 6, 10, 9, 10, 11, 9, 10, 8] (Fig. 2d, "SG
+        Co-Opt"), the node-indexed attack-duration vector produced by RoSSO's
+        greedy defense-placement algorithm (Alg. 1) under a defense budget
+        B = 108. Node ordering matches graph.san_francisco_graph() (confirmed
+        via the identical pi vector), so this vector applies directly by
+        index. RoSSO reports J_SG = 10.2e-2 for this case.
+    The softmin temperature is annealed geometrically from temp0 to
     temp_min over n_iter_phys iterations (temp_k = temp0 * temp_decay**k,
     temp_decay = (temp_min / temp0)**(1/n_iter_phys)), tightening the softmin ->
     min approximation as optimization progresses while reusing a single
     compiled JIT kernel throughout (see make_grad_stackelberg). The same
     schedule is reused for the lifted-space PGD.
-    Benchmarked on the full (w_max=None) complete graph with tau = graph
-    diameter: unlike Kemeny/RTE, the Stackelberg lifted projection uses
+    Benchmarked on the full (w_max=None) complete graph with heterogeneous_tau=False
+    (tau = 9 uniform): unlike Kemeny/RTE, the Stackelberg lifted projection uses
     epsilon=0 (see make_project_Q), which is dramatically cheaper at the full
     132-state degree_lifting budget (~1-3s per solve, vs 40-90s+ for Kemeny's
     epsilon=1e-6 projection at the same size) and reliably feasible from a
@@ -918,7 +975,8 @@ def san_francisco_stackelberg_improvement(
     50, via the tol early-stop) in benchmarking; alpha_phys=1.0 and
     n_iter_phys=250 were confirmed to already be well-tuned (alpha_phys=1.0
     outperformed 0.5, reaching J(P_bar*) ~= 0.089, close to the [33] literature
-    baseline of 0.0975 -- see Table II).
+    baseline of 0.0975 -- see Table II). The heterogeneous_tau=True scenario has
+    not yet been separately benchmarked for step-size tuning.
     """
     A, W, _ = san_francisco_graph()
     if w_max is not None:
@@ -929,9 +987,11 @@ def san_francisco_stackelberg_improvement(
     W_lift = V @ W @ V.T
 
     m = A.shape[0]
-    tau = np.full(m, tau, dtype=int) if np.isscalar(tau) else np.asarray(tau, dtype=int)
-    if tau.shape != (m,):
-        raise ValueError(f"tau must be a scalar or have length m={m}, got shape {tau.shape}")
+    tau = (
+        np.array([8, 6, 11, 10, 6, 10, 9, 10, 11, 9, 10, 8], dtype=int)
+        if heterogeneous_tau
+        else np.full(m, 9, dtype=int)
+    )
 
     temp_decay = (temp_min / temp0) ** (1 / n_iter_phys)
 
@@ -1479,60 +1539,35 @@ if __name__ == "__main__":
     # )
     # print(f"E-R Stackelberg elapsed: {time.time() - _t0:.1f}s")
 
-    # This took 2.5 hrs.
-    _t0 = time.time()
-    erdos_renyi_rte_improvement(
-        m=10,
-        p_values=np.linspace(0.25, 0.75, 6),
-        n_graphs=20,
-        budget=20,
-        n_init=10,
-        n_iter_phys=200,
-        alpha_phys=1e-2,
-        tol_phys=1e-6,
-        n_iter_lift=200,
-        alpha_lift=1e-3,
-        tol_lift=1e-6,
-        eta=0.1,
-        seed=42,
-        save_path='results/data/erdos_renyi_rte_diffs.npy',
-    )
-    print(f"E-R RTE elapsed: {time.time() - _t0:.1f}s")
-
-    # Tuning notes (benchmarked on the full w_max=None complete graph, see each
-    # function's docstring for details): the physical stage of all three
-    # metrics is fast and reliable (~1-4s for a single restart, plus RTE's
-    # one-time ~72s JIT compile), and its defaults below are already tuned.
-    # The lifted stage is only reliable for Stackelberg (epsilon=0 projection,
-    # ~1-3s/solve at n=132); Kemeny's and RTE's lifted stage share a
-    # make_project_Q call (epsilon=1e-6) that failed to reach feasibility in
-    # 0/32 benchmarked attempts at n=132 -- this is a solver-scale limitation,
-    # not something any PGD hyperparameter combination here can fix. Expect
-    # san_francisco_kemeny_improvement/san_francisco_rte_improvement's lifted
-    # stage to frequently raise RuntimeError at the default w_max=None; pass a
-    # small w_max to shrink the degree_lifting budget if you need it to
-    # actually complete (pruning did not fully eliminate the issue in testing
-    # either, so treat this as exploratory rather than a guaranteed fix).
-
-    # This took ~1-2 mins for the physical stage per trial; the lifted stage
-    # is expected to frequently fail (see the tuning notes above and this
-    # function's docstring) -- n_iter_lift is kept small (50) accordingly.
+    # # This took 2.5 hrs.
     # _t0 = time.time()
-    # san_francisco_kemeny_improvement(
-    #     n_trials=20,
-    #     n_init=5,
-    #     n_iter_phys=150,
-    #     alpha_phys=1e-3,
+    # erdos_renyi_rte_improvement(
+    #     m=10,
+    #     p_values=np.linspace(0.25, 0.75, 6),
+    #     n_graphs=20,
+    #     budget=20,
+    #     n_init=10,
+    #     n_iter_phys=200,
+    #     alpha_phys=1e-2,
     #     tol_phys=1e-6,
-    #     n_iter_lift=50,
+    #     n_iter_lift=200,
     #     alpha_lift=1e-3,
     #     tol_lift=1e-6,
-    #     max_grad_norm_phys=2000.0,
-    #     max_grad_norm_lift=200.0,
-    #     seed=43,
-    #     save_path='results/data/san_francisco_kemeny_diffs.npy',
+    #     eta=0.1,
+    #     seed=42,
+    #     save_path='results/data/erdos_renyi_rte_diffs.npy',
     # )
-    # print(f"SF Kemeny elapsed: {time.time() - _t0:.1f}s")
+    # print(f"E-R RTE elapsed: {time.time() - _t0:.1f}s")
+
+    # This is expected to take roughly 14 minutes.
+    _t0 = time.time()
+    san_francisco_kemeny_improvement(
+        n_trials=20,
+        n_init=10,
+        seed=42,
+        save_path='results/data/san_francisco_kemeny_diffs.npy',
+    )
+    print(f"SF Kemeny elapsed: {time.time() - _t0:.1f}s")
 
     # This is the practical one of the three at the default w_max=None: both
     # stages use epsilon=0 (or no projection tolerance issue), and a full
@@ -1541,12 +1576,8 @@ if __name__ == "__main__":
     # benchmarking) is estimated at roughly 30-60 mins based on a ~95s/restart
     # lifted-stage benchmark.
     # _t0 = time.time()
-    # A_sf, W_sf, _ = san_francisco_graph()
-    # G_sf = nx.from_numpy_array(A_sf * W_sf, create_using=nx.DiGraph)
-    # G_sf.remove_edges_from(nx.selfloop_edges(G_sf))
-    # tau_sf = nx.diameter(G_sf, weight='weight')
     # san_francisco_stackelberg_improvement(
-    #     tau=tau_sf,
+    #     heterogeneous_tau=False,
     #     n_trials=10,
     #     n_init=3,
     #     n_iter_phys=250,
