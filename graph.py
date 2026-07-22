@@ -16,6 +16,11 @@ def _reachable(A: np.ndarray) -> bool:
     return len(visited) == m
 
 
+def is_strongly_connected(A: np.ndarray) -> bool:
+    """Check whether every node can reach, and be reached from, every other node."""
+    return _reachable(A) and _reachable(A.T)
+
+
 def erdos_renyi_graph(m: int, p: float, seed: int | None = None, max_iter: int = 1000) -> np.ndarray:
     """Sample a connected undirected Erdős-Rényi graph G(m, p).
 
@@ -209,6 +214,22 @@ def prune_long_edges(A: np.ndarray, W: np.ndarray, threshold: float) -> np.ndarr
     return A * (W <= threshold)
 
 
+def graph_diameter(A: np.ndarray, W: np.ndarray | None = None) -> int:
+    """(Weighted) diameter of a strongly connected digraph: the largest shortest
+    directed path length between any ordered pair of distinct nodes.
+
+    If W is given, edge (i, j) has length W[i, j] (e.g. travel time in minutes,
+    matching san_francisco_graph()'s Wbar); if None, every edge has unit length (hop
+    count). Self-loops are excluded, since they never affect the shortest path between
+    distinct nodes. A must be strongly connected (see is_strongly_connected); otherwise
+    some pair has no path and networkx raises.
+    """
+    weights = A if W is None else W * A
+    weights = weights * (1 - np.eye(A.shape[0]))
+    G = nx.from_numpy_array(weights, create_using=nx.DiGraph)
+    return int(round(nx.diameter(G, weight='weight')))
+
+
 def san_francisco_graph() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build the 12-node SF police district graph from the RoSSO paper (John et al., ICRA 2024).
 
@@ -239,3 +260,55 @@ def san_francisco_graph() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     pi_bar = np.array([133, 90, 89, 87, 83, 83, 74, 64, 48, 43, 38, 34], dtype=float) / 866
     return A, Wbar, pi_bar
 
+
+def ctcv_graph() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build the 18-node CTCV campus graph from the patrolling_sim benchmark
+    (David Portugal, github.com/davidbsp/patrolling_sim, maps/ctcv/ctcv.graph).
+
+    The 18 nodes are waypoints on a map of CTCV (University of Coimbra),
+    connected as a sparse undirected graph. W(i, j) is the edge distance in
+    meters (rounded to the nearest integer), converted from the file's
+    pixel-distance edge costs using its stated map resolution (0.05
+    m/pixel); the diagonal is set to 1, matching san_francisco_graph's
+    convention. There is no natural stationary-distribution data for this
+    graph (unlike the SF crime data), so pi_bar is uniform.
+    Returns A: (18, 18) symmetric binary adjacency matrix, ones on the diagonal.
+    Returns W: (18, 18) symmetric integer edge-distance weight matrix in meters, ones on the diagonal.
+    Returns pi: (18,) uniform desired stationary distribution, summing to 1.
+    """
+    Wbar = np.array([
+        [1, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [7, 1, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 1, 0, 2, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 3, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 3, 1, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 9, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1, 2, 2, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1, 5, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 7, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 1, 6, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 1, 3, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 1, 4],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 1],
+    ], dtype=float)
+    A = (Wbar > 0).astype(float)
+    pi_bar = np.full(18, 1.0 / 18)
+    return A, Wbar, pi_bar
+
+
+def airport_graph() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    Wbar = np.array([
+        [1, 6, 6, 2, 3],
+        [6, 1, 3, 6, 12],
+        [6, 3, 1, 5, 15],
+        [2, 6, 5, 1, 5],
+        [3, 12, 15, 5, 1]
+    ], dtype=float)
+    A = np.ones_like(Wbar)
+    pi_bar = np.full(5, 1.0 / 5)
+    return A, Wbar, pi_bar

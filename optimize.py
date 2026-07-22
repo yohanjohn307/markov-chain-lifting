@@ -11,6 +11,10 @@ _SOLVER_TOL = EQUALITY_ATOL * 1e-3
 _DEFAULT_MAX_ITER = 10_000
 _PROJECTION_VIOLATION_TOL = 1e-4
 _LINSOLVE_REG = 1e-10
+# "optimal_inaccurate" just means OSQP missed its own strict convergence
+# certificate, not that the point is bad -- _projection_violation is the real
+# feasibility gate, so both statuses are accepted and gated on violation <= tol.
+_ACCEPTABLE_STATUSES = {cp.OPTIMAL, cp.OPTIMAL_INACCURATE}
 
 
 def _clip_to_support(Q_value: np.ndarray, support: np.ndarray, epsilon: float) -> np.ndarray:
@@ -19,14 +23,10 @@ def _clip_to_support(Q_value: np.ndarray, support: np.ndarray, epsilon: float) -
 
 
 def _projection_violation(Q_value: np.ndarray | None, lower: np.ndarray, upper: np.ndarray) -> float:
-    """Max amount by which Q_value falls outside [lower, upper], or its row sums
-    differ from its column sums (0 if fully feasible).
-
-    The row/col check matters here specifically because _clip_to_support can
-    introduce that drift even when the raw solve was on-manifold: flooring
-    below-epsilon entries and zeroing off-support ones isn't re-projected onto
-    Q @ 1 == Q.T @ 1, so this must be evaluated on the *clipped* candidate, not
-    the raw solver output, to actually catch it.
+    """Max amount Q_value falls outside [lower, upper], or its row/col sums differ
+    (0 if fully feasible). Must be evaluated on the *clipped* candidate, since
+    _clip_to_support's flooring/zeroing can itself break Q @ 1 == Q.T @ 1 even when
+    the raw solve was on-manifold.
     """
     if Q_value is None:
         return np.inf
@@ -38,12 +38,9 @@ def _projection_violation(Q_value: np.ndarray | None, lower: np.ndarray, upper: 
 def _violation_tolerance(n: int, m: int) -> float:
     """Size-aware feasibility tolerance for _projection_violation.
 
-    The row/col-sum gap it bounds is a sum of ~n independent per-entry
-    clipping corrections (see _projection_violation's docstring), so a fixed
-    absolute tolerance under-counts the drift that larger lifted state spaces
-    (larger n relative to the physical space m) structurally accumulate.
-    Scales _PROJECTION_VIOLATION_TOL by sqrt(n / m), which is 1 for the
-    unlifted physical case (n == m).
+    The row/col-sum gap is a sum of ~n independent per-entry clipping corrections,
+    so a fixed absolute tolerance under-counts drift at larger lifted state spaces.
+    Scales _PROJECTION_VIOLATION_TOL by sqrt(n / m) (1 for the unlifted case n == m).
     """
     return _PROJECTION_VIOLATION_TOL * np.sqrt(n / m)
 
@@ -59,10 +56,9 @@ def _solve_projection(
     tol: float,
     max_iter: int = _DEFAULT_MAX_ITER,
 ) -> tuple[np.ndarray | None, float]:
-    """Solve a projection QP and clip the result, falling back to a cold start
-    if warm-started OSQP stalls (status != optimal) or silently returns a point
-    that's infeasible -- either directly, or only after clipping -- beyond tol
-    (see _violation_tolerance). Returns (clipped_Q, violation) for the accepted attempt.
+    """Solve a projection QP and clip the result, falling back to a cold start if
+    warm-started OSQP stalls or the (possibly clipped) result is infeasible beyond
+    tol. Returns (clipped_Q, violation) for the accepted attempt.
     """
     def attempt() -> tuple[np.ndarray | None, float]:
         if Q.value is None:
@@ -72,7 +68,7 @@ def _solve_projection(
 
     prob.solve(solver=cp.OSQP, warm_start=warm_start, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL, max_iter=max_iter, polish=True)
     clipped, violation = attempt()
-    if warm_start and (prob.status != cp.OPTIMAL or violation > tol):
+    if warm_start and (prob.status not in _ACCEPTABLE_STATUSES or violation > tol):
         prob.solve(solver=cp.OSQP, warm_start=False, eps_abs=_SOLVER_TOL, eps_rel=_SOLVER_TOL, max_iter=max_iter, polish=True)
         clipped, violation = attempt()
     return clipped, violation
@@ -83,26 +79,32 @@ def make_project_Q(
     V: np.ndarray,
     epsilon: float = 1e-6,
     max_iter: int = _DEFAULT_MAX_ITER,
+    equality_tol: float | None = None,
 ):
     """Return a cached projection function for the lifted feasible set.
 
     Builds the CVXPY problem once with cp.Parameter; each call updates the
     parameter and warm-starts the solver, eliminating per-call canonicalization.
 
-    epsilon must stay small: each of the (budget/m)^2-ish virtual sub-edges
-    within a physical (i, j) group is independently floored at epsilon * U,
-    but all of them must still sum to Q_bar[i, j] within EQUALITY_ATOL, so an
-    epsilon large enough to clear solver noise (_SOLVER_TOL) can make the box
-    and equality-band constraints genuinely infeasible for small Q_bar
-    entries at larger budgets -- confirmed empirically (raising the default
-    to 1e-3 made every restart at budget=3m/3.5m report status=infeasible).
-    The residual solver-noise-driven infeasibility this leaves at the default
-    1e-6 is instead absorbed by _violation_tolerance scaling with problem size.
+    epsilon must stay small: it floors each virtual sub-edge within a physical
+    (i, j) group, but all of them must still sum to Q_bar[i, j] within
+    equality_tol, so too large an epsilon makes the box and equality-band
+    constraints infeasible at larger budgets (confirmed empirically: 1e-3 made
+    every restart at budget=3m/3.5m infeasible). The residual solver-noise
+    infeasibility left at the default 1e-6 is absorbed by _violation_tolerance.
+
+    equality_tol sets the width of the V.T @ Q @ V ≈ Q_bar band; defaults to
+    EQUALITY_ATOL. Tightening it makes the lifted chain's implied physical-node
+    stationary distribution track Q_bar's more closely, at the risk of
+    infeasibility if Q_bar's own row/col-sum imbalance approaches it -- see
+    san_francisco_kemeny_improvement's lift_equality_tol for a caller that does.
     """
     _check_ergodic_flow(Q_bar, m=V.shape[1])
     _check_mapping(V)
     n = V.shape[0]
     m = V.shape[1]
+    if equality_tol is None:
+        equality_tol = EQUALITY_ATOL
     Q_bar_ceil = (Q_bar > SUPPORT_ATOL).astype(int) # hardcoded to catch Stackelberg case where epsilon = 0
     U = V @ Q_bar_ceil @ V.T
     Q_tilde_p = cp.Parameter((n, n))
@@ -111,14 +113,11 @@ def make_project_Q(
         Q @ np.ones(n) == Q.T @ np.ones(n),
         Q >= epsilon * U,
         Q <= U,
-        # V.T @ Q @ V == Q_bar,
-        # Exact equality is infeasible whenever Q_bar's own row/col sums differ by
-        # more than machine precision (e.g. Q_bar came from another PGD projection,
-        # which only converges to _SOLVER_TOL): combined with Q @ 1 == Q^T @ 1 above,
-        # exact equality here would force Q_bar to have exactly equal row/col sums,
-        # which _check_ergodic_flow only guarantees to EQUALITY_ATOL. Relaxing to a
-        # band of that width keeps the constraint matrix full rank so OSQP converges.
-        cp.abs(V.T @ Q @ V - Q_bar) <= EQUALITY_ATOL,
+        # Relaxed V.T @ Q @ V == Q_bar: exact equality would force Q_bar's row/col
+        # sums to match exactly, but they're only guaranteed to EQUALITY_ATOL (e.g.
+        # Q_bar came from another PGD projection). A band of that width keeps the
+        # constraint matrix full rank so OSQP converges.
+        cp.abs(V.T @ Q @ V - Q_bar) <= equality_tol,
     ]
     prob = cp.Problem(cp.Minimize(cp.sum_squares(Q - Q_tilde_p)), constraints)
 
@@ -129,7 +128,7 @@ def make_project_Q(
     def project(Q_tilde: np.ndarray) -> np.ndarray:
         Q_tilde_p.value = Q_tilde
         clipped, violation = _solve_projection(prob, warm_start=True, Q=Q, lower=lower, upper=upper, support=U, epsilon=epsilon, tol=tol, max_iter=max_iter)
-        if clipped is None or prob.status != cp.OPTIMAL or violation > tol:
+        if clipped is None or prob.status not in _ACCEPTABLE_STATUSES or violation > tol:
             raise RuntimeError(
                 f"project_Q: QP did not converge to a feasible point (status={prob.status}, "
                 f"violation={violation:.3e}, tol={tol:.3e}); check that Q_bar is a valid ergodic flow for V"
@@ -171,7 +170,7 @@ def make_project_Q_bar(
     def project(Q_tilde: np.ndarray) -> np.ndarray:
         Q_tilde_p.value = Q_tilde
         clipped, violation = _solve_projection(prob, warm_start=True, Q=Q, lower=lower, upper=upper, support=A, epsilon=epsilon, tol=tol, max_iter=max_iter)
-        if clipped is None or prob.status != cp.OPTIMAL or violation > tol:
+        if clipped is None or prob.status not in _ACCEPTABLE_STATUSES or violation > tol:
             raise RuntimeError(
                 f"project_Q_bar: QP did not converge to a feasible point (status={prob.status}, "
                 f"violation={violation:.3e}, tol={tol:.3e}); check inputs are consistent"
@@ -260,33 +259,22 @@ def _lifted_first_passage_history(P: np.ndarray, V: np.ndarray, W: np.ndarray, K
 def _stackelberg_Q(Q: np.ndarray, V: np.ndarray, tau: np.ndarray, W: np.ndarray, lse_temp: float):
     """JAX-traced lifted Stackelberg metric as a function of ergodic flow Q (Eq. 41-42).
 
-    Unlike the earlier (commented-out) version, this aggregates the raw set
-    capture probabilities over each starting group S_i, weighted by pi and
-    normalized by pi_bar_i = sum_{l in S_i} pi_l, i.e. it applies
-    U = diag(pi_bar)^{-1} V^T diag(pi) to the n x m matrix of set capture
-    probabilities to obtain the m x m matrix
-    Psi_lift(i, j) = (1 / pi_bar_i) * sum_{l in S_i} pi_l * P[T_Sj_l <= tau_j]
-    (Eq. 41), matching Psi^lift = U * sum_j sum_{k=1}^{tau_j} F_k^lift e_j e_j^T
-    (Eq. 42). pi_bar is derived from Q and V (pi_bar = V^T pi) rather than
-    passed in, since it is fixed by the lifting constraint V^T Q V = Q_bar.
+    Aggregates raw set capture probabilities over each starting group S_i, weighted
+    by pi and normalized by pi_bar_i = sum_{l in S_i} pi_l, giving
+    Psi_lift(i, j) = (1 / pi_bar_i) * sum_{l in S_i} pi_l * P[T_Sj_l <= tau_j] (Eq. 41).
+    pi_bar = V^T pi is derived from Q rather than passed in, since it's fixed by the
+    lifting constraint V^T Q V = Q_bar.
 
-    The true metric is min(Psi_lift), but jnp.min is flat (zero gradient) almost
-    everywhere and only subgradient-informative at the (possibly non-unique) argmin.
-    We instead use the softmin -lse_temp * logsumexp(-Psi_lift / lse_temp), which is smooth
-    and gives every entry a gradient weighted by its closeness to the minimum.
-    As lse_temp -> 0, softmin(Psi_lift) -> min(Psi_lift) (it is always a lower bound,
-    with gap <= lse_temp * log(m * m)).
+    The true metric is min(Psi_lift), but jnp.min has zero gradient almost everywhere.
+    We use the smooth softmin -lse_temp * logsumexp(-Psi_lift / lse_temp) instead, a
+    lower bound that -> min(Psi_lift) as lse_temp -> 0 (gap <= lse_temp * log(m * m)).
 
-    W is the edge travel-time matrix (Eq. 38); W = 1 recovers the unweighted
-    recursion (Eq. 43).
+    W is the edge travel-time matrix (Eq. 38); W = 1 recovers the unweighted recursion
+    (Eq. 43).
     """
     pi = Q.sum(axis=1)
-    # epsilon=0 callers (e.g. the Stackelberg PGD runs) permit intermediate
-    # iterates where a virtual state's total flow is exactly zero as long as a
-    # sibling state in the same group covers the rest of V^T Q V = Q_bar.
-    # Guard both divisions below so that a zero-flow (virtual or group) state
-    # yields a zero row/entry instead of 0/0 = NaN, which would otherwise
-    # poison the whole gradient.
+    # epsilon=0 callers permit intermediate iterates with a zero-flow virtual state;
+    # guard both divisions below so that yields 0 instead of 0/0 = NaN.
     P = Q / jnp.where(pi > 0, pi, 1.0)[:, None]
     n, m = V.shape
     pi_bar = V.T @ pi
@@ -303,26 +291,17 @@ def _stackelberg_Q(Q: np.ndarray, V: np.ndarray, tau: np.ndarray, W: np.ndarray,
 def make_grad_stackelberg(tau: np.ndarray, V: np.ndarray | None = None, W: np.ndarray | None = None):
     """Return a JIT-compiled gradient function for the (softmin) lifted Stackelberg metric w.r.t. Q.
 
-    The returned grad_fn(Q, lse_temp) takes lse_temp as a traced argument rather than a
-    Python constant baked in at trace time, so it can be annealed across PGD
-    iterations (e.g. via projected_gradient_descent's temp_schedule) without
-    triggering recompilation: smaller lse_temp tracks the true min(Psi_lift) more
-    closely but concentrates gradients on the near-minimal entries; larger lse_temp
-    gives smoother, more informative gradients early in optimization at the cost
-    of a looser approximation to the true metric.
-    pi_bar is not a parameter here: the normalization U = diag(pi_bar)^{-1} V^T diag(pi)
-    in Eq. (41)-(42) is recomputed from Q (and the fixed V) on every call, via
-    pi_bar = V^T pi, since it is fixed by the lifting constraint V^T Q V = Q_bar.
-    V is the n x m mapping matrix (Sec. II-C); if None, defaults to the identity
-    (no lifting), recovering the gradient of the standard (non-lifted) Stackelberg
-    metric J (Eq. 39).
-    W is the lifted edge travel-time matrix (Sec. VII, Eq. 38); entries are positive
-    integers giving the number of time steps to traverse each edge, and only entries
-    where the corresponding edge exists are used. If None, all edges default to unit
-    travel time, recovering the unweighted recursion (Eq. 43).
-    Call once before the optimization loop; the returned callable reuses the compiled
-    kernel on every iteration without retracing.
-    To maximize J^lift, negate the returned function's outputs.
+    grad_fn(Q, lse_temp) takes lse_temp as a traced argument (not baked in at trace
+    time) so it can be annealed across PGD iterations without recompiling: smaller
+    lse_temp tracks the true min(Psi_lift) more closely but concentrates gradients
+    near the minimum; larger gives smoother early-optimization gradients at the cost
+    of a looser approximation. pi_bar = V^T pi is recomputed from Q each call rather
+    than passed in, since it's fixed by the lifting constraint V^T Q V = Q_bar.
+    V is the n x m mapping matrix; if None, defaults to identity (no lifting),
+    recovering the standard (non-lifted) Stackelberg metric J (Eq. 39).
+    W is the edge travel-time matrix (Eq. 38); if None, unit travel time (Eq. 43).
+    Call once before the optimization loop; reuses the compiled kernel every
+    iteration. To maximize J^lift, negate the returned function's outputs.
     """
     tau = np.asarray(tau, dtype=int)
     V = np.eye(len(tau)) if V is None else np.asarray(V)
@@ -360,16 +339,12 @@ def _rte_Q(Q: np.ndarray, V: np.ndarray, pi_bar: np.ndarray, K_eta: int, W: np.n
 def make_grad_rte(pi_bar: np.ndarray, eta: float, V: np.ndarray | None = None, W: np.ndarray | None = None):
     """Return a JIT-compiled gradient function for the truncated lifted RTE w.r.t. Q.
 
-    V is the n x m mapping matrix (Sec. II-C); if None, defaults to the identity
-    (no lifting), recovering the gradient of the standard (non-lifted) RTE metric H
-    (Eq. 44). In that case pi_bar must equal the stationary distribution pi itself.
-    W is the lifted edge travel-time matrix (Sec. VII, Eq. 38); entries are positive
-    integers giving the number of time steps to traverse each edge, and only entries
-    where the corresponding edge exists are used. If None, all edges default to unit
-    travel time, recovering the unweighted recursion (Eq. 43).
-    Call once before the optimization loop; the returned callable reuses the compiled
-    kernel on every iteration without retracing.
-    V, pi_bar, and W are held fixed (baked into the compiled kernel).
+    V is the n x m mapping matrix; if None, defaults to identity (no lifting),
+    recovering the standard (non-lifted) RTE metric H (Eq. 44) -- pi_bar must then
+    equal the stationary distribution pi itself.
+    W is the edge travel-time matrix (Eq. 38); if None, unit travel time (Eq. 43).
+    V, pi_bar, and W are baked into the compiled kernel. Call once before the
+    optimization loop; reuses the compiled kernel every iteration.
     To maximize H^lift, negate the returned function's outputs.
     """
     K_eta = int(np.ceil(1.0 / (eta * float(pi_bar.min())))) - 1
@@ -399,60 +374,27 @@ def projected_gradient_descent(
 ) -> tuple[np.ndarray, list[float], int]:
     """Minimize an objective via projected gradient descent.
 
-    Each iteration:
-      Q_tilde  = Q_k - alpha * grad_fn(Q_k)[1]   (gradient step)
-      Q_{k+1} = project_fn(Q_tilde)               (projection step)
+    Each iteration: Q_tilde = Q_k - alpha * grad_fn(Q_k)[1], then Q_{k+1} =
+    project_fn(Q_tilde). grad_fn and project_fn are closures capturing all fixed
+    parameters, e.g. for lifted Kemeny: grad_fn = lambda Q: _grad_lifted_kemeny(Q,
+    V, pi_bar), project_fn = lambda Q: project_Q(Q, Q_bar, V). To maximize instead
+    of minimize, negate grad_fn's outputs.
 
-    grad_fn and project_fn are closures capturing all fixed parameters. Examples:
+    temp_schedule is optional, for grad_fn's built from make_grad_stackelberg, whose
+    grad_fn(Q, lse_temp) takes the softmin temperature as a traced second argument.
+    When given, grad_fn is called as grad_fn(Q, temp_schedule(k)) each iteration
+    instead of grad_fn(Q), annealing lse_temp without retracing the JIT kernel.
 
-      Lifted Kemeny (minimize):
-        pi_bar     = Q_bar.sum(axis=1)
-        grad_fn    = lambda Q: _grad_lifted_kemeny(Q, V, pi_bar)
-        project_fn = lambda Q: project_Q(Q, Q_bar, V)
+    max_grad_norm, if given, clips the gradient's Frobenius norm before the step
+    (preserving direction). Near-zero stationary mass on a state can make
+    _grad_kemeny/_grad_lifted_kemeny's adjoint solves ill-conditioned, producing
+    gradient norms orders of magnitude above the typical ~1e2-1e3 range; an
+    unclipped step then sends Q_tilde far outside the feasible region, which is
+    what makes project_fn raise. Clipping fixes this at the source.
 
-      Physical Kemeny (minimize):
-        pi_bar     = Q0_bar.sum(axis=1)
-        grad_fn    = lambda Q: _grad_kemeny(Q)
-        project_fn = lambda Q: project_Q_bar(Q, adj, pi_bar)
-
-      Lifted RTE (maximize — negate grad_fn):
-        pi_bar        = Q_bar.sum(axis=1)
-        grad_lifted_H = make_grad_lifted_rte(pi_bar, eta, V)
-        grad_fn       = lambda Q: tuple(-x for x in grad_lifted_H(Q))
-        project_fn    = lambda Q: project_Q(Q, Q_bar, V)
-
-    temp_schedule is optional and only applies to grad_fn's built from
-    make_grad_lifted_stackelberg, whose grad_fn(Q, lse_temp) takes the softmin
-    temperature as a second, traced (non-retracing) argument. When temp_schedule
-    is given, grad_fn is called as grad_fn(Q, temp_schedule(k)) at iteration k
-    instead of grad_fn(Q), letting lse_temp anneal (e.g. exponential decay) across
-    the PGD loop while reusing the single compiled JIT kernel throughout. Example
-    (maximize J^lift, so negate; lse_temp still passed positionally through the
-    lambda):
-
-      grad_stackelberg = make_grad_lifted_stackelberg(tau, V)
-      grad_fn = lambda Q, lse_temp: tuple(-x for x in grad_stackelberg(Q, lse_temp))
-      Q_opt, hist = projected_gradient_descent(
-          Q0, grad_fn, project_fn, alpha, n_iter, tol,
-          temp_schedule=lambda k: temp0 * decay ** k,
-      )
-
-    max_grad_norm, if given, clips the gradient's Frobenius norm to at most
-    this value (preserving direction) before taking the step. Near-zero
-    stationary mass on a state (more likely at larger lifting budgets or
-    skewed liftings) can make _grad_kemeny/_grad_lifted_kemeny's adjoint
-    linear solves severely ill-conditioned, producing gradient norms many
-    orders of magnitude above the typical range (~1e2-1e3 for these Kemeny
-    problems); an unclipped step of that size sends Q_tilde far outside the
-    feasible region, and projecting it back is what makes project_fn raise
-    (or silently return something barely feasible) -- clipping the norm
-    fixes this at the source rather than only patching the projection's
-    feasibility check.
-
-    Returns (final Q, history of objective values, number of iterations run).
-    history[-1] always equals the objective value at the returned Q. The
-    iteration count is the number of gradient+projection steps actually taken:
-    fewer than n_iter if the tol early-stop fired, else n_iter.
+    Returns (final Q, history of objective values, iterations actually run).
+    history[-1] always equals the objective at the returned Q. Iteration count is
+    below n_iter only if the tol early-stop fired.
     """
     Q = Q0.copy()
     history: list[float] = []
@@ -470,10 +412,8 @@ def projected_gradient_descent(
         Q_tilde = Q - alpha * grad
         Q = project_fn(Q_tilde)
     else:
-        # Loop ran to completion without the tol early-stop firing, so Q now
-        # reflects one more gradient+projection step than history[-1]. Re-evaluate
-        # at the final Q (and final annealed temperature) so history[-1] matches
-        # the returned Q, as it already does in the early-stop case above.
+        # No early stop: Q is one step ahead of history[-1]; re-evaluate so
+        # history[-1] matches the returned Q, as in the early-stop case above.
         val, _ = grad_fn(Q, temp_schedule(n_iter)) if temp_schedule is not None else grad_fn(Q)
         history.append(val)
 
