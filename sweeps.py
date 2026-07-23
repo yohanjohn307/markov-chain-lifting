@@ -8,7 +8,6 @@ from markov import ergodic_flow_to_transition, conductance, SUPPORT_ATOL
 from metrics import stackelberg, lifted_stackelberg
 from graph import (
     erdos_renyi_graph,
-    erdos_renyi_digraph,
     random_chain,
     degree_lifting,
     san_francisco_graph,
