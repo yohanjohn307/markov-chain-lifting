@@ -74,20 +74,6 @@ def _lifting(deg: np.ndarray) -> np.ndarray:
     return V
 
 
-def outdegree_lifting(A: np.ndarray) -> np.ndarray:
-    """Build a mapping matrix giving node j outdeg(j) virtual states (one per outgoing
-    edge, n = |E| total), ordered by physical node."""
-    outdeg = (A - np.diag(np.diag(A))).sum(axis=1).astype(int)
-    return _lifting(outdeg)
-
-
-def indegree_lifting(A: np.ndarray) -> np.ndarray:
-    """Build a mapping matrix giving node j indeg(j) virtual states (one per incoming
-    edge, n = |E| total), ordered by physical node."""
-    indeg = (A - np.diag(np.diag(A))).sum(axis=0).astype(int)
-    return _lifting(indeg)
-
-
 def proportional_lifting(weights: np.ndarray, budget: int) -> np.ndarray:
     """Build a (budget, m) lifting mapping matrix with virtual-state counts
     proportional to weights. Each physical node gets at least one virtual state;
