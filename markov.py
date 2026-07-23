@@ -2,9 +2,7 @@ import numpy as np
 
 
 EQUALITY_ATOL = 1e-3
-# Floor for "is this entry nonzero" / support-mask tests (distinct from
-# EQUALITY_ATOL's row/column-sum equality band).
-SUPPORT_ATOL = 1e-6
+SUPPORT_ATOL = 1e-6  # floor for "is this entry nonzero" support-mask tests
 
 
 # ---------------------------------------------------------------------------
@@ -72,10 +70,7 @@ def ergodic_flow_to_transition(Q: np.ndarray) -> np.ndarray:
 
 
 def collapsing(P: np.ndarray, V: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Collapse the lifted MC P to the physical space using V.
-
-    Returns (P_bar, pi_bar): the collapsed transition matrix and its stationary distribution.
-    """
+    """Collapse the lifted MC P to the physical space using V. Returns (P_bar, pi_bar)."""
     _check_stochastic(P)
     _check_mapping(V, n=P.shape[0])
     pi = stationary_distribution(P)
@@ -85,11 +80,9 @@ def collapsing(P: np.ndarray, V: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def conductance(Pbar: np.ndarray) -> tuple[float, float]:
-    """Compute the conductance and its associated Kemeny constant lower bound.
+    """Compute the conductance and its Kemeny constant lower bound 1/(2*phi).
 
     Enumerates all 2^n - 2 subsets, so only practical for small state spaces.
-
-    Returns (phi, lower_bound) where lower_bound = 1 / (2 * phi).
     """
     _check_stochastic(Pbar)
     n = Pbar.shape[0]

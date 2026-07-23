@@ -121,10 +121,8 @@ def fig_kemeny_vs_transition_probability() -> None:
 
 
 def fig_estimation_error_vs_trajectory_length(seed: int = 42) -> None:
-    """Reproduce Fig. 3: MLE estimation error vs. trajectory length.
-
-    Proposition 4 guarantees the plug-in estimate of the physical-space MC converges to P_bar,
-    so the error should decay to zero as the trajectory length grows.
+    """Reproduce Fig. 3: MLE estimation error vs. trajectory length. Proposition 4
+    guarantees this converges to P_bar, so the error should decay to zero.
     """
     rng = np.random.default_rng(seed)
     p = 0.9
@@ -179,10 +177,10 @@ def fig_estimation_error_vs_trajectory_length(seed: int = 42) -> None:
 
 
 def fig_mean_capture_time_convergence(seed: int = 42) -> None:
-    """Reproduce Fig. 4: empirical mean capture time vs. number of trials for P_bar and lifted P.
-
-    For P_bar the mean converges to M(P_bar); for the lifted P it converges to M^lift(P),
-    not M(P), demonstrating that the lifted Kemeny constant is the correct performance metric.
+    """Reproduce Fig. 4: empirical mean capture time vs. number of trials for P_bar and
+    lifted P. For P_bar the mean converges to K(P_bar); for lifted P it converges to
+    K^lift(P), not K(P), demonstrating that the lifted Kemeny constant is the correct
+    performance metric.
     """
     rng = np.random.default_rng(seed)
     Pbar = np.array([[0, 1, 0, 0], [0.5, 0, 0.5, 0], [0, 0.5, 0, 0.5], [0, 0, 1, 0]])
@@ -296,17 +294,10 @@ def print_san_francisco_wmax_computation_time_table(
     rte_manifest: dict | None = None,
 ) -> None:
     """Print mean±std PGD computation time (s) vs. pruning threshold w_max for the San
-    Francisco case study (Sec. IX-C), for copy/pasting into Table I's San Francisco
-    rows. Mirrors print_san_francisco_wmax_table's manifest-driven structure, so the
-    two tables are guaranteed to be reporting on the same underlying sweep data.
-
-    Each manifest is a dict as returned by sweeps.san_francisco_wmax_sweep()[metric] (or
-    reloaded via np.load(path, allow_pickle=True).item()), mapping each swept w_max to a
-    'status' and, for successes, a 'save_paths' entry. For each successful w_max, loads
-    times_phys/times_lift from its saved per-w_max npy file (san_francisco_*_improvement
-    always saves these under identical key names) and reports mean ± std across all
-    n_trials restarts. w_max values without a successful save_path print as '-', so
-    rows stay aligned even across metrics swept over different w_max lists.
+    Francisco case study, for Table I's San Francisco rows. Each manifest is a dict as
+    returned by sweeps.san_francisco_wmax_sweep()[metric] (or reloaded from disk),
+    mapping each swept w_max to a 'status' and, for successes, a 'save_paths' entry;
+    w_max values without a successful save_path print as '-'.
     """
     manifests = {
         'kemeny': kemeny_manifest,
@@ -358,16 +349,11 @@ def print_san_francisco_table(
     stackelberg_phys: float, stackelberg_lift: float,
     rte_phys: float, rte_lift: float,
 ) -> None:
-    """Print the San Francisco case study results (Sec. IX-C), for copy/pasting into
-    Table II of the manuscript, alongside the [31]/[33] literature baseline values.
-
-    kemeny_phys/kemeny_lift, stackelberg_phys/stackelberg_lift, and rte_phys/rte_lift
-    are the "Proposed" row's values -- the physical/lifted pair from the single
-    largest-improvement trial, as returned by fig_san_francisco_kemeny,
-    fig_san_francisco_stackelberg, and fig_san_francisco_rte respectively.
-    [31] (Duan/George/Bullo, max-RTE) and [33] (RoSSO) do not report every metric for
-    this benchmark; missing entries are left blank. These baseline numbers are
-    literature constants (RoSSO itself is not vendored/runnable here), not recomputed.
+    """Print the San Francisco case study results for Table II, alongside the [31]/[33]
+    literature baselines (literature constants, not recomputed here). The kemeny/
+    stackelberg/rte phys/lift arguments are the "Proposed" row's values -- the
+    physical/lifted pair from the single largest-improvement trial, as returned by
+    fig_san_francisco_kemeny/_stackelberg/_rte respectively.
     """
     rows = [
         ('Proposed', kemeny_phys, kemeny_lift, stackelberg_phys, stackelberg_lift, rte_phys, rte_lift),
@@ -397,18 +383,11 @@ def print_san_francisco_wmax_table(
     rte_manifest: dict | None = None,
 ) -> None:
     """Print physical/lifted Kemeny/Stackelberg/RTE metrics vs. pruning threshold w_max
-    for the San Francisco case study, for copy/pasting into a w_max pruning results table.
-
-    Each manifest is a dict as returned by sweeps.san_francisco_wmax_sweep()[metric] (or
-    reloaded via np.load(path, allow_pickle=True).item()), mapping each swept w_max to a
-    'status' and, for successes, a 'save_paths' entry. Recomputes each successful w_max's
-    physical/lifted values via the existing fig_san_francisco_kemeny/stackelberg/rte:
-    both columns come from whichever single trial has the largest phys-to-lift
-    improvement, since each trial's lifted MC is optimized as a lifting of that same
-    trial's physical MC (see sweeps.san_francisco_kemeny_improvement) -- so the printed
-    pair is jointly achievable from one run rather than a mix-and-match of separate
-    optimizations. w_max values without a successful save_path print as '-', so rows
-    stay aligned even across metrics swept over different w_max lists.
+    for the San Francisco case study. Each manifest is as in
+    print_san_francisco_wmax_computation_time_table. Recomputes each successful
+    w_max's physical/lifted values via fig_san_francisco_kemeny/stackelberg/rte, so
+    the printed pair is jointly achievable from one trial rather than a mix-and-match
+    of separate optimizations.
     """
     fig_fns = {
         'kemeny': fig_san_francisco_kemeny,
@@ -473,12 +452,9 @@ def fig_erdos_renyi_kemeny_percent_decrease(
     data_path: str = 'results/data/erdos_renyi_kemeny_diffs.npy',
 ) -> None:
     """Ridgeline plot of the percent decrease in Kemeny's constant achieved by
-    stationary-distribution lifting, vs. Erdős-Rényi edge probability p.
-
-    Loads the raw optimization results saved by sweeps.erdos_renyi_kemeny_improvement,
-    recomputes K(P_bar*) and K^lift(P*) for every graph from the stored ergodic flow
-    matrices (reusing the stored V rather than re-deriving the lifting, so this stays
-    correct regardless of which lifting method/budget the sweep used), and reports
+    stationary-distribution lifting, vs. Erdős-Rényi edge probability p. Loads the raw
+    results saved by sweeps.erdos_renyi_kemeny_improvement, recomputes K(P_bar*) and
+    K^lift(P*) from the stored ergodic flow matrices and V, and reports
     100 * (K(P_bar*) - K^lift(P*)) / K(P_bar*).
     """
     data = np.load(data_path, allow_pickle=True).item()
@@ -525,9 +501,6 @@ def fig_erdos_renyi_kemeny_percent_decrease(
 
     print_computation_time_table('Kemeny', p_values, mean_times_phys, mean_times_lift)
 
-    # ------------------------------------------------------------------
-    # Ridgeline plot via joypy
-    # ------------------------------------------------------------------
     valid_idx = [i for i, d in enumerate(all_pct) if len(d) >= 2]
     valid_p = [p_values[i] for i in valid_idx]
     valid_pct = [all_pct[i] for i in valid_idx]
@@ -569,12 +542,11 @@ def fig_erdos_renyi_kemeny_percent_decrease(
 def fig_erdos_renyi_stackelberg_percent_increase(
     data_path: str = 'results/data/erdos_renyi_stackelberg_diffs.npy',
 ) -> None:
-    """Ridgeline plot of the percent increase in the Stackelberg metric achieved by degree
-    lifting, vs. Erdős-Rényi edge probability p.
-
-    Loads the raw optimization results saved by figures.fig_erdos_renyi_stackelberg_improvement,
-    recomputes J(P_bar*) and J^lift(P*) for every graph from the stored ergodic flow
-    matrices, and reports 100 * (J^lift(P*) - J(P_bar*)) / J(P_bar*).
+    """Ridgeline plot of the percent increase in the Stackelberg metric achieved by
+    lifting, vs. Erdős-Rényi edge probability p. Loads the raw results saved by
+    sweeps.erdos_renyi_stackelberg_improvement, recomputes J(P_bar*) and J^lift(P*)
+    from the stored ergodic flow matrices, and reports
+    100 * (J^lift(P*) - J(P_bar*)) / J(P_bar*).
     """
     data = np.load(data_path, allow_pickle=True).item()
     p_values = data['p_values']
@@ -595,9 +567,6 @@ def fig_erdos_renyi_stackelberg_percent_increase(
         ):
             if Q_bar is None or Q_lift is None:
                 continue
-            # V is the actual mapping used to produce Q_lift: the realized-stationary-
-            # distribution lifting if it outperformed the physical optimum, or the
-            # identity fallback (see erdos_renyi_stackelberg_improvement) otherwise.
             P_bar = ergodic_flow_to_transition(Q_bar)
             P_lift = ergodic_flow_to_transition(Q_lift)
             j_phys = stackelberg(P_bar, tau)
@@ -619,9 +588,6 @@ def fig_erdos_renyi_stackelberg_percent_increase(
 
     print_computation_time_table('Stackelberg', p_values, mean_times_phys, mean_times_lift)
 
-    # ------------------------------------------------------------------
-    # Ridgeline plot via joypy
-    # ------------------------------------------------------------------
     valid_idx = [i for i, d in enumerate(all_pct) if len(d) >= 2]
     valid_p = [p_values[i] for i in valid_idx]
     valid_pct = [all_pct[i] for i in valid_idx]
@@ -663,12 +629,11 @@ def fig_erdos_renyi_stackelberg_percent_increase(
 def fig_erdos_renyi_rte_percent_increase(
     data_path: str = 'results/data/erdos_renyi_rte_diffs.npy',
 ) -> None:
-    """Ridgeline plot of the percent increase in the Return-Time Entropy metric achieved by
-    stationary-distribution lifting, vs. Erdős-Rényi edge probability p.
-
-    Loads the raw optimization results saved by sweeps.erdos_renyi_rte_improvement,
-    recomputes H(P_bar*) and H^lift(P*) for every graph from the stored ergodic flow
-    matrices, and reports 100 * (H^lift(P*) - H(P_bar*)) / H(P_bar*).
+    """Ridgeline plot of the percent increase in the Return-Time Entropy metric
+    achieved by lifting, vs. Erdős-Rényi edge probability p. Loads the raw results
+    saved by sweeps.erdos_renyi_rte_improvement, recomputes H(P_bar*) and H^lift(P*)
+    from the stored ergodic flow matrices, and reports
+    100 * (H^lift(P*) - H(P_bar*)) / H(P_bar*).
     """
     data = np.load(data_path, allow_pickle=True).item()
     p_values = data['p_values']
@@ -689,17 +654,8 @@ def fig_erdos_renyi_rte_percent_increase(
         ):
             if Q_bar is None or Q_lift is None:
                 continue
-            # V is the actual mapping used to produce Q_lift: the stationary-
-            # distribution lifting if it outperformed the physical optimum, or the
-            # identity fallback (see erdos_renyi_rte_improvement) otherwise.
             P_bar = ergodic_flow_to_transition(Q_bar)
             P_lift = ergodic_flow_to_transition(Q_lift)
-            # Pass pi = Q.sum(axis=1) directly rather than let return_time_entropy
-            # re-derive it from P via a fresh linear solve: that solve is exact in
-            # principle but can be catastrophically ill-conditioned for chains with
-            # very small transition probabilities, even though Q's row sum is exact
-            # by construction (Q came from a projected-gradient-descent optimizer
-            # whose projection step pins Q.sum(axis=1) to the target pi).
             h_phys = return_time_entropy(P_bar, eta, pi=Q_bar.sum(axis=1))
             h_lift = lifted_return_time_entropy(P_lift, V, eta, pi=Q_lift.sum(axis=1))
             if h_phys > 0:
@@ -719,9 +675,6 @@ def fig_erdos_renyi_rte_percent_increase(
 
     print_computation_time_table('RTE', p_values, mean_times_phys, mean_times_lift)
 
-    # ------------------------------------------------------------------
-    # Ridgeline plot via joypy
-    # ------------------------------------------------------------------
     valid_idx = [i for i, d in enumerate(all_pct) if len(d) >= 2]
     valid_p = [p_values[i] for i in valid_idx]
     valid_pct = [all_pct[i] for i in valid_idx]
@@ -766,17 +719,10 @@ def fig_erdos_renyi_combined_ridgelines(
     rte_data_path: str = 'results/data/erdos_renyi_rte_diffs.npy',
     dpi: int = 300,
 ) -> None:
-    """Combine Figs. 6-8 (Kemeny/Stackelberg/RTE percent-change ridgeline plots) into a
-    single figure with the three plots stacked vertically.
-
-    joypy's joyplot() always claims the whole enclosing Figure for its shared-x-axis
-    trick (it internally calls fig.add_subplot(1, 1, 1) spanning the entire figure, then
-    fig.tight_layout()), so three joyplots cannot be composed as regions of one Figure
-    via gridspec/subfigures without each call's full-figure axis and tight_layout call
-    clobbering the others' layout (confirmed experimentally; subfigures additionally
-    raise AttributeError since SubFigure has no tight_layout). Instead, this calls each
-    existing standalone fig_erdos_renyi_*_percent_* function unmodified, rasterizes its
-    already-correct output, and stacks the three images as panels.
+    """Combine Figs. 6-8 (Kemeny/Stackelberg/RTE percent-change ridgeline plots) into
+    one figure, stacked vertically, by rasterizing each standalone
+    fig_erdos_renyi_*_percent_* panel and compositing the images (joypy's own figures
+    can't be composed directly via gridspec/subfigures; see NOTES.md).
     """
     import io
     import matplotlib.image as mpimg
@@ -818,14 +764,10 @@ def _select_phys_lift(
     lift_vals: list[float],
     higher_is_better: bool,
 ) -> tuple[float, float]:
-    """Reduce per-trial physical/lifted metric values to a single (phys, lift) pair.
-
-    Returns both values from whichever single trial index maximizes the improvement
-    from physical to lifted (phys - lift if lower is better, e.g. Kemeny; lift - phys
-    if higher is better, e.g. Stackelberg/RTE). Since Q_lift_list[t] is always
-    optimized as a lifting of Q_bar_list[t] (see sweeps.san_francisco_*_improvement),
-    this reports a physical/lifted pair that is jointly achievable from one trial,
-    rather than mixing each column's independently-best value across unrelated trials.
+    """Return the (phys, lift) pair from whichever trial maximizes the improvement from
+    physical to lifted (phys - lift if lower is better, e.g. Kemeny; lift - phys if
+    higher is better, e.g. Stackelberg/RTE), so the reported pair is jointly
+    achievable from one trial rather than mixing independently-best values.
     """
     sign = 1 if higher_is_better else -1
     idx = int(np.argmax([sign * (l - p) for p, l in zip(phys_vals, lift_vals)]))
@@ -837,12 +779,9 @@ def fig_san_francisco_kemeny(
 ) -> tuple[float, float]:
     """Report the physical and lifted (weighted) Kemeny constants achieved on the
     San Francisco graph (Sec. IX-C / Table II), from the trial with the largest
-    improvement.
-
-    Loads the raw optimization results saved by sweeps.san_francisco_kemeny_improvement,
-    recomputes K(P_bar*) and K^lift(P*) for every trial from the stored ergodic flow
-    matrices, and returns the (K(P_bar*), K^lift(P*)) pair from the single trial with
-    the largest K(P_bar*) - K^lift(P*) gap (see _select_phys_lift).
+    improvement (see _select_phys_lift). Loads the raw results saved by
+    sweeps.san_francisco_kemeny_improvement and recomputes K(P_bar*)/K^lift(P*) for
+    every trial from the stored ergodic flow matrices.
     """
     data = np.load(data_path, allow_pickle=True).item()
     W = data['W']
@@ -877,18 +816,11 @@ def fig_san_francisco_stackelberg(
 ) -> tuple[float, float]:
     """Report the physical and lifted (weighted) Stackelberg metrics achieved on
     the San Francisco graph (Appendix A / Table II), from the trial with the largest
-    improvement.
-
-    Loads the raw optimization results saved by sweeps.san_francisco_stackelberg_improvement,
-    recomputes J(P_bar*) and J^lift(P*) for every trial from the stored ergodic flow
-    matrices, and returns the (J(P_bar*), J^lift(P*)) pair from the single trial with
-    the largest J^lift(P*) - J(P_bar*) gap (see _select_phys_lift).
-
-    V is a per-trial list (not a single fixed matrix): each trial's lifting was
-    re-derived from that trial's own realized physical stationary distribution
-    (see sweeps.san_francisco_stackelberg_improvement), so W_lift is recomputed
-    per trial from its own V, matching how figures.fig_erdos_renyi_stackelberg_percent_increase
-    zips over a per-graph V list.
+    improvement (see _select_phys_lift). Loads the raw results saved by
+    sweeps.san_francisco_stackelberg_improvement and recomputes J(P_bar*)/J^lift(P*)
+    for every trial; V is a per-trial list since each trial's lifting is re-derived
+    from that trial's own realized physical stationary distribution, so W_lift is
+    recomputed per trial from its own V.
     """
     data = np.load(data_path, allow_pickle=True).item()
     W = data['W']
@@ -924,12 +856,9 @@ def fig_san_francisco_rte(
 ) -> tuple[float, float]:
     """Report the physical and lifted (weighted) truncated RTE achieved on the
     San Francisco graph (Appendix B / Table II), from the trial with the largest
-    improvement.
-
-    Loads the raw optimization results saved by sweeps.san_francisco_rte_improvement,
-    recomputes H(P_bar*) and H^lift(P*) for every trial from the stored ergodic flow
-    matrices, and returns the (H(P_bar*), H^lift(P*)) pair from the single trial with
-    the largest H^lift(P*) - H(P_bar*) gap (see _select_phys_lift).
+    improvement (see _select_phys_lift). Loads the raw results saved by
+    sweeps.san_francisco_rte_improvement and recomputes H(P_bar*)/H^lift(P*) for
+    every trial from the stored ergodic flow matrices.
     """
     data = np.load(data_path, allow_pickle=True).item()
     W = data['W']
@@ -966,19 +895,12 @@ def fig_san_francisco_mean_capture_time_convergence(
     N_trials: int = 5_000,
 ) -> None:
     """Reproduce Fig. 4's mean-capture-time convergence plot for the San Francisco case
-    study (Sec. IX-C), demonstrating the same phenomenon on real, weighted data.
-
-    Loads the raw results saved by sweeps.san_francisco_kemeny_improvement, recomputes
-    K(P_bar)/K^lift(P) per trial, and picks the trial minimizing K^lift(P) (matching
-    that function's own "best lifted MC" choice), so Q_bar/Q_lift come from the same
-    trial rather than independently-best physical and lifted trials.
-
-    Since W is a real (non-uniform) driving-time matrix, each simulated hop accumulates
-    its W-weighted travel time rather than one time step per transition (Eq. 30). An
-    attacker is drawn from pi_bar (physical) and a patroller from pi (lifted), simulated
-    until it reaches the attacker's physical node; the running mean capture time
-    converges to K^lift(P), not K(P_bar) -- what a naive adversary observing only the
-    physical trajectory would expect.
+    study, demonstrating the same phenomenon on real, weighted data. Loads the raw
+    results saved by sweeps.san_francisco_kemeny_improvement, picks the trial
+    minimizing K^lift(P), and simulates a patroller (drawn from pi, lifted) chasing an
+    attacker (drawn from pi_bar, physical), accumulating W-weighted travel time per
+    hop (Eq. 30). The running mean converges to K^lift(P), not K(P_bar) -- what a
+    naive adversary observing only the physical trajectory would expect.
     """
     rng = np.random.default_rng(seed)
     data = np.load(data_path, allow_pickle=True).item()
@@ -1011,8 +933,6 @@ def fig_san_francisco_mean_capture_time_convergence(
     m = W.shape[0]
     n = P_lift.shape[0]
 
-    # patroller drawn from pi (virtual), attacker from pi_bar (physical); accumulate
-    # W_lift-weighted travel time per hop until the patroller reaches the attacker
     capture_times = []
     for _ in range(N_trials):
         patroller = rng.choice(n, p=pi)
@@ -1047,17 +967,11 @@ def fig_lifting_budget_sweep_boxplot(
 ) -> None:
     """Grouped boxplot of percent decrease in Kemeny's constant vs. lifting budget,
     comparing the six lifting-budget allocation heuristics across many random graphs.
-
     Loads the raw results saved by sweeps.kemeny_lifting_budget_sweep and, for every
-    (graph, budget, method) triple, reports the already-computed, guaranteed-nonnegative
-    100 * diff / K(P_bar*). Reuses the stored 'diffs' rather than recomputing K^lift(P*)
-    from scratch, since re-deriving the lifted MC's stationary distribution via a fresh
-    linear solve (rather than the optimizer's own Q_lift.sum(axis=1)) can be inaccurate
-    at near-zero stationary mass, enough to spuriously flip a positive diff negative.
-    Entries where every lifted PGD restart failed (Q_lift is None) are skipped.
-
-    Also prints a per-method/per-budget count of 'success'/'no_improvement'/'all_failed'
-    runs (older saves without a 'status' field report 'unknown' instead).
+    (graph, budget, method) triple, reports the stored 100 * diff / K(P_bar*) (reusing
+    the optimizer's own 'diffs' rather than recomputing K^lift(P*) from a fresh,
+    possibly ill-conditioned linear solve). Also prints a per-method/per-budget count
+    of 'success'/'no_improvement'/'all_failed' runs.
     """
     data = np.load(data_path, allow_pickle=True).item()
     m = data['m']

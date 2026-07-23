@@ -22,10 +22,9 @@ def is_strongly_connected(A: np.ndarray) -> bool:
 
 
 def erdos_renyi_graph(m: int, p: float, seed: int | None = None, max_iter: int = 1000) -> np.ndarray:
-    """Sample a connected undirected Erdős-Rényi graph G(m, p).
-
-    Re-samples until connected (required for irreducible Markov chains).
-    Returns A: (m, m) symmetric binary adjacency matrix with ones on the diagonal.
+    """Sample a connected undirected Erdős-Rényi graph G(m, p), re-sampling until
+    connected (required for irreducible Markov chains). Returns a symmetric (m, m)
+    binary adjacency matrix with ones on the diagonal.
     """
     rng = np.random.default_rng(seed)
     for _ in range(max_iter):
@@ -39,12 +38,10 @@ def erdos_renyi_graph(m: int, p: float, seed: int | None = None, max_iter: int =
 
 
 def erdos_renyi_digraph(m: int, p: float, seed: int | None = None, max_iter: int = 1000) -> np.ndarray:
-    """Sample a strongly connected directed Erdős-Rényi digraph D(m, p).
-
-    Edge directions are sampled independently, i.e. A[i, j] and A[j, i] need not
-    agree. Re-samples until strongly connected (required for irreducible Markov
-    chains). Returns A: (m, m) binary adjacency matrix with ones on the diagonal,
-    where A[i, j] = 1 denotes a directed edge i -> j.
+    """Sample a strongly connected directed Erdős-Rényi digraph D(m, p), with edge
+    directions sampled independently (A[i, j] and A[j, i] need not agree). Re-samples
+    until strongly connected. Returns a binary (m, m) adjacency matrix with ones on
+    the diagonal, where A[i, j] = 1 denotes a directed edge i -> j.
     """
     rng = np.random.default_rng(seed)
     for _ in range(max_iter):
@@ -56,12 +53,10 @@ def erdos_renyi_digraph(m: int, p: float, seed: int | None = None, max_iter: int
 
 
 def random_chain(A: np.ndarray, seed: int | None = None) -> np.ndarray:
-    """Generate a random ergodic flow matrix on a graph.
-
-    Samples i.i.d. Uniform(0, 1) weights on the upper-triangle edges of A and
-    symmetrises by reflection, giving a reversible (detailed-balance) ergodic flow
-    matrix Q with Q[i, j] = 0 when A[i, j] = 0.
-    Returns Q: (m, m) non-negative symmetric matrix satisfying Q 1 = Q^T 1.
+    """Generate a random reversible ergodic flow matrix on a graph, by sampling i.i.d.
+    Uniform(0, 1) weights on the upper-triangle edges of A and symmetrising by
+    reflection. Returns a non-negative symmetric (m, m) matrix Q satisfying Q 1 = Q^T 1,
+    with Q[i, j] = 0 where A[i, j] = 0.
     """
     rng = np.random.default_rng(seed)
     U = np.triu(rng.uniform(0.0, 1.0, size=A.shape) * A)
@@ -80,35 +75,24 @@ def _lifting(deg: np.ndarray) -> np.ndarray:
 
 
 def outdegree_lifting(A: np.ndarray) -> np.ndarray:
-    """Build the outdegree-lifting mapping matrix for a graph.
-
-    Node j gets outdeg(j) virtual states (one per outgoing edge), giving n = |E| total.
-    Virtual states are ordered by physical node: the first outdeg(0) rows map to node 0, etc.
-    Returns V: (n, m) binary mapping matrix with exactly one 1 per row.
-    """
+    """Build a mapping matrix giving node j outdeg(j) virtual states (one per outgoing
+    edge, n = |E| total), ordered by physical node."""
     outdeg = (A - np.diag(np.diag(A))).sum(axis=1).astype(int)
     return _lifting(outdeg)
 
 
 def indegree_lifting(A: np.ndarray) -> np.ndarray:
-    """Build the indegree-lifting mapping matrix for a graph.
-
-    Node j gets indeg(j) virtual states (one per incoming edge), giving n = |E| total.
-    Virtual states are ordered by physical node: the first indeg(0) rows map to node 0, etc.
-    Returns V: (n, m) binary mapping matrix with exactly one 1 per row.
-    """
+    """Build a mapping matrix giving node j indeg(j) virtual states (one per incoming
+    edge, n = |E| total), ordered by physical node."""
     indeg = (A - np.diag(np.diag(A))).sum(axis=0).astype(int)
     return _lifting(indeg)
 
 
 def proportional_lifting(weights: np.ndarray, budget: int) -> np.ndarray:
-    """Build a lifting mapping matrix with virtual-state counts proportional to weights.
-
-    Each of the m physical nodes gets at least one virtual state, and the
-    remaining budget - m states are apportioned across nodes proportional to
-    weights using the largest-remainder (Hamilton) method, so counts sum
-    exactly to budget.
-    Returns V: (budget, m) binary mapping matrix with exactly one 1 per row.
+    """Build a (budget, m) lifting mapping matrix with virtual-state counts
+    proportional to weights. Each physical node gets at least one virtual state;
+    the remaining budget - m are apportioned by the largest-remainder (Hamilton)
+    method so counts sum exactly to budget.
     """
     weights = np.asarray(weights, dtype=float)
     m = weights.shape[0]
@@ -129,33 +113,20 @@ def proportional_lifting(weights: np.ndarray, budget: int) -> np.ndarray:
 
 
 def uniform_lifting(A: np.ndarray, budget: int) -> np.ndarray:
-    """Build a lifting mapping matrix that splits virtual states evenly across nodes.
-
-    Uses proportional_lifting with a vector of ones, i.e. weights are uniform.
-    Returns V: (budget, m) binary mapping matrix with exactly one 1 per row.
-    """
+    """proportional_lifting with uniform weights: virtual states split evenly across nodes."""
     m = A.shape[0]
     return proportional_lifting(np.ones(m), budget)
 
 
 def stationary_lifting(pi_bar: np.ndarray, budget: int) -> np.ndarray:
-    """Build a lifting mapping matrix proportional to the desired stationary distribution.
-
-    Uses proportional_lifting with weights x_i = pi_bar_i, so nodes with higher
-    stationary probability (visited more often) get more virtual states.
-    Returns V: (budget, m) binary mapping matrix with exactly one 1 per row.
-    """
+    """proportional_lifting weighted by pi_bar: higher-stationary-probability nodes
+    (visited more often) get more virtual states."""
     return proportional_lifting(pi_bar, budget)
 
 
 def degree_lifting(A: np.ndarray, budget: int) -> np.ndarray:
-    """Build a lifting mapping matrix proportional to node max(indegree, outdegree).
-
-    Uses proportional_lifting with weights x_i = max(indeg(i), outdeg(i)), so
-    nodes with more incident edges (in either direction) get more virtual
-    states.
-    Returns V: (budget, m) binary mapping matrix with exactly one 1 per row.
-    """
+    """proportional_lifting weighted by max(indegree, outdegree): nodes with more
+    incident edges get more virtual states."""
     A_off = A - np.diag(np.diag(A))
     outdeg = A_off.sum(axis=1)
     indeg = A_off.sum(axis=0)
@@ -164,13 +135,8 @@ def degree_lifting(A: np.ndarray, budget: int) -> np.ndarray:
 
 
 def betweenness_lifting(A: np.ndarray, budget: int) -> np.ndarray:
-    """Build a lifting mapping matrix proportional to node betweenness centrality.
-
-    Uses proportional_lifting with weights x_i equal to the (directed) betweenness
-    centrality of node i, so nodes lying on more shortest paths get more virtual
-    states.
-    Returns V: (budget, m) binary mapping matrix with exactly one 1 per row.
-    """
+    """proportional_lifting weighted by (directed) betweenness centrality: nodes on
+    more shortest paths get more virtual states."""
     m = A.shape[0]
     G = nx.from_numpy_array(A - np.diag(np.diag(A)), create_using=nx.DiGraph)
     bc = nx.betweenness_centrality(G)
@@ -179,13 +145,8 @@ def betweenness_lifting(A: np.ndarray, budget: int) -> np.ndarray:
 
 
 def eigenvector_lifting(A: np.ndarray, budget: int) -> np.ndarray:
-    """Build a lifting mapping matrix proportional to node eigenvector centrality.
-
-    Uses proportional_lifting with weights x_i equal to the (directed) eigenvector
-    centrality of node i, so nodes connected to other well-connected nodes get
-    more virtual states.
-    Returns V: (budget, m) binary mapping matrix with exactly one 1 per row.
-    """
+    """proportional_lifting weighted by (directed) eigenvector centrality: nodes
+    connected to other well-connected nodes get more virtual states."""
     m = A.shape[0]
     G = nx.from_numpy_array(A - np.diag(np.diag(A)), create_using=nx.DiGraph)
     ec = nx.eigenvector_centrality(G, max_iter=1000)
@@ -194,35 +155,22 @@ def eigenvector_lifting(A: np.ndarray, budget: int) -> np.ndarray:
 
 
 def reversible_flow_lifting(Q_bar: np.ndarray, budget: int) -> np.ndarray:
-    """Build a lifting mapping matrix proportional to each node's reversible flow.
-
-    Uses proportional_lifting with weights x_i = sum_j min(q_bar_ij, q_bar_ji), the
-    portion of node i's ergodic flow that is balanced (back-and-forth) with its
-    neighbors, so nodes with more reversible traffic get more virtual states.
-    Returns V: (budget, m) binary mapping matrix with exactly one 1 per row.
-    """
+    """proportional_lifting weighted by x_i = sum_j min(q_bar_ij, q_bar_ji), the
+    portion of node i's ergodic flow balanced (back-and-forth) with its neighbors."""
     weights = np.minimum(Q_bar, Q_bar.T).sum(axis=1)
     return proportional_lifting(weights, budget)
 
 
 def prune_long_edges(A: np.ndarray, W: np.ndarray, threshold: float) -> np.ndarray:
-    """Remove edges whose travel time exceeds a threshold.
-
-    Returns A_pruned: (m, m) binary adjacency matrix equal to A, but with
-    A_pruned[i, j] = 0 wherever W[i, j] > threshold.
-    """
+    """Remove edges of A whose travel time in W exceeds threshold."""
     return A * (W <= threshold)
 
 
 def graph_diameter(A: np.ndarray, W: np.ndarray | None = None) -> int:
-    """(Weighted) diameter of a strongly connected digraph: the largest shortest
-    directed path length between any ordered pair of distinct nodes.
-
-    If W is given, edge (i, j) has length W[i, j] (e.g. travel time in minutes,
-    matching san_francisco_graph()'s Wbar); if None, every edge has unit length (hop
-    count). Self-loops are excluded, since they never affect the shortest path between
-    distinct nodes. A must be strongly connected (see is_strongly_connected); otherwise
-    some pair has no path and networkx raises.
+    """(Weighted) diameter of a strongly connected digraph A: the largest shortest
+    directed path length between any ordered pair of distinct nodes, excluding
+    self-loops. Edge lengths come from W if given, else unit (hop count). Raises via
+    networkx if A is not strongly connected (see is_strongly_connected).
     """
     weights = A if W is None else W * A
     weights = weights * (1 - np.eye(A.shape[0]))
@@ -231,16 +179,10 @@ def graph_diameter(A: np.ndarray, W: np.ndarray | None = None) -> int:
 
 
 def san_francisco_graph() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Build the 12-node SF police district graph from the RoSSO paper (John et al., ICRA 2024).
-
-    The 12 nodes are important intersections in a downtown San Francisco police
-    district, connected as a complete graph. W(i, j) is the driving time in
-    minutes from intersection i to j (asymmetric due to one-way streets etc.),
-    originally from Alamdari et al. 2014. The desired stationary distribution pi
-    is chosen proportional to the monthly crime rate at each intersection.
-    Returns A: (12, 12) binary adjacency matrix (all ones, including diagonal).
-    Returns W: (12, 12) travel-time weight matrix.
-    Returns pi: (12,) desired stationary distribution, summing to 1.
+    """Build the 12-node SF police district graph from the RoSSO paper (John et al.,
+    ICRA 2024): a complete graph over downtown SF intersections, with W(i, j) the
+    (asymmetric) driving time in minutes (Alamdari et al. 2014) and pi_bar proportional
+    to monthly crime rate per intersection. Returns (A, W, pi_bar).
     """
     Wbar = np.array([
         [1, 3, 3, 5, 4, 6, 3, 5, 7, 4, 6, 6],
@@ -262,19 +204,12 @@ def san_francisco_graph() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def ctcv_graph() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Build the 18-node CTCV campus graph from the patrolling_sim benchmark
-    (David Portugal, github.com/davidbsp/patrolling_sim, maps/ctcv/ctcv.graph).
-
-    The 18 nodes are waypoints on a map of CTCV (University of Coimbra),
-    connected as a sparse undirected graph. W(i, j) is the edge distance in
-    meters (rounded to the nearest integer), converted from the file's
-    pixel-distance edge costs using its stated map resolution (0.05
-    m/pixel); the diagonal is set to 1, matching san_francisco_graph's
-    convention. There is no natural stationary-distribution data for this
-    graph (unlike the SF crime data), so pi_bar is uniform.
-    Returns A: (18, 18) symmetric binary adjacency matrix, ones on the diagonal.
-    Returns W: (18, 18) symmetric integer edge-distance weight matrix in meters, ones on the diagonal.
-    Returns pi: (18,) uniform desired stationary distribution, summing to 1.
+    """Build the 18-node CTCV campus graph from the patrolling_sim benchmark (David
+    Portugal, github.com/davidbsp/patrolling_sim, maps/ctcv/ctcv.graph): a sparse
+    undirected graph of waypoints at University of Coimbra, with W(i, j) the edge
+    distance in meters (converted from the file's pixel distances at 0.05 m/pixel).
+    No natural stationary distribution exists for this graph, so pi_bar is uniform.
+    Returns (A, W, pi_bar).
     """
     Wbar = np.array([
         [1, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -302,6 +237,11 @@ def ctcv_graph() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def airport_graph() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build the 5-node airport hub graph from Patel, Agharkar, and Bullo (IEEE TAC,
+    2015), Fig. 3: a complete graph over SEA, JFK, LAX, ANC, and ORL, with W(i, j) the
+    travel time between hubs plus service time at hub j (self-loops carry only service
+    time). pi_bar is uniform. Returns (A, W, pi_bar).
+    """
     Wbar = np.array([
         [1, 6, 6, 2, 3],
         [6, 1, 3, 6, 12],

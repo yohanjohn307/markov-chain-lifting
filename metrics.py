@@ -6,13 +6,9 @@ from markov import _check_stochastic, _check_mapping, stationary_distribution
 def kemeny(Pbar: np.ndarray, W: np.ndarray | None = None, pi: np.ndarray | None = None) -> float:
     """Compute the Kemeny constant.
 
-    W is the edge weight matrix; if None, all weights default to 1.
-    pi is Pbar's stationary distribution; if None, it is solved for via
-    stationary_distribution(Pbar). Pass pi explicitly when it is already known from
-    an ergodic flow matrix Q (pi = Q.sum(axis=1)) rather than re-derived from Pbar:
-    that solve is a fresh linear system and can be ill-conditioned for chains with
-    very small transition probabilities, even when Q's row sum is exact by
-    construction (e.g. from a projected-gradient-descent optimizer).
+    W is the edge weight matrix, default unit weights. pi is Pbar's stationary
+    distribution; if None it is solved via stationary_distribution(Pbar) (see
+    NOTES.md for why passing a known pi, e.g. from Q.sum(axis=1), is preferable).
     """
     _check_stochastic(Pbar)
     n = Pbar.shape[0]
@@ -35,9 +31,7 @@ def lifted_kemeny(
     """Compute the lifted Kemeny constant.
 
     V is the n x m mapping matrix whose j-th column indicates which virtual states
-    belong to physical node j. W is the edge weight matrix; if None, all weights default to 1.
-    pi is P's stationary distribution; if None it is solved for (see kemeny's docstring
-    for why passing a known pi, e.g. from an ergodic flow's row sum, is preferable).
+    belong to physical node j. W, pi as in kemeny().
     """
     _check_stochastic(P)
     _check_mapping(V, n=P.shape[0])
@@ -55,12 +49,8 @@ def lifted_kemeny(
 
 
 def _first_passage_matrices(P: np.ndarray, V: np.ndarray, W: np.ndarray, K: int) -> dict:
-    """Compute the (set) first passage probability matrices F^lift_1, ..., F^lift_K.
-
-    Implements the travel-time recursion of Eq. (38):
-        F^lift_k = P^(k) V + sum_{w=1}^{w_max} P^(w) [F^lift_{k-w} - (F^lift_{k-w} o V)],
-    where P^(w) = P o 1{W = w}. Passing V = I recovers the (unlifted) matrices F_k.
-    """
+    """Compute the (set) first passage probability matrices F^lift_1, ..., F^lift_K
+    via the travel-time recursion of Eq. (38). Passing V = I recovers the F_k."""
     W = np.asarray(W, dtype=int)
     w_max = int(W.max())
     P_w = {w: P * (W == w) for w in range(1, w_max + 1)}
@@ -127,12 +117,9 @@ def return_time_entropy(
 ) -> float:
     """Compute the truncated Return-Time Entropy.
 
-    K_eta = ceil(1 / (eta * pi_min)) - 1 controls truncation; eta upper-bounds discarded probability.
-    W is the edge travel-time matrix (in N); if None, all travel times default to 1.
-    pi is P's stationary distribution; if None it is solved for (see kemeny's docstring
-    for why passing a known pi, e.g. from an ergodic flow's row sum, is preferable —
-    K_eta is especially sensitive to pi.min(), so an ill-conditioned solve here can
-    blow up the truncation length).
+    K_eta = ceil(1 / (eta * pi_min)) - 1 controls truncation; eta upper-bounds discarded
+    probability. W, pi as in kemeny() -- K_eta is especially sensitive to pi.min(), so an
+    ill-conditioned pi solve here can blow up the truncation length; see NOTES.md.
     """
     _check_stochastic(P)
     n = P.shape[0]
@@ -154,15 +141,9 @@ def lifted_return_time_entropy(
     P: np.ndarray, V: np.ndarray, eta: float = 0.1, W: np.ndarray | None = None,
     pi: np.ndarray | None = None,
 ) -> float:
-    """Compute the truncated lifted Return-Time Entropy.
-
-    H^lift(P) = -sum_j pi_bar_j * sum_{k=1}^{K_eta} R_k(j) log R_k(j),
-    where K_eta = ceil(1 / (eta * pi_bar_min)) - 1.
-    W is the edge travel-time matrix (in N); if None, all travel times default to 1.
-    pi is P's stationary distribution; if None it is solved for (see kemeny's docstring
-    for why passing a known pi, e.g. from an ergodic flow's row sum, is preferable —
-    K_eta is especially sensitive to pi_bar.min(), so an ill-conditioned solve here can
-    blow up the truncation length).
+    """Compute the truncated lifted Return-Time Entropy H^lift(P) (Eq. 45), with
+    K_eta = ceil(1 / (eta * pi_bar_min)) - 1. W, pi as in kemeny(); see NOTES.md
+    on K_eta's sensitivity to pi_bar.min().
     """
     _check_stochastic(P)
     _check_mapping(V, n=P.shape[0])
