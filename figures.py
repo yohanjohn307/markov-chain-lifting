@@ -53,8 +53,8 @@ def fig_random_graphs(m: int = 10, p_values=None, seed: int = 42) -> None:
     fig.colorbar(sm, ax=axes, orientation='horizontal', fraction=0.05, pad=0.05,
                  label='Stationary distribution $\\bar\\pi$')
 
-    plt.savefig('random_graphs.pdf', bbox_inches='tight')
-    plt.savefig('random_graphs.png', dpi=150, bbox_inches='tight')
+    plt.savefig('results/figures/random_graphs.pdf', bbox_inches='tight')
+    plt.savefig('results/figures/random_graphs.png', dpi=150, bbox_inches='tight')
 
 
 def fig_random_digraphs(m: int = 10, p_values=None, seed: int = 42) -> None:
@@ -90,8 +90,8 @@ def fig_random_digraphs(m: int = 10, p_values=None, seed: int = 42) -> None:
     fig.colorbar(sm, ax=axes, orientation='horizontal', fraction=0.05, pad=0.05,
                  label='Stationary distribution $\\bar\\pi$')
 
-    plt.savefig('random_digraphs.pdf', bbox_inches='tight')
-    plt.savefig('random_digraphs.png', dpi=150, bbox_inches='tight')
+    plt.savefig('results/figures/random_digraphs.pdf', bbox_inches='tight')
+    plt.savefig('results/figures/random_digraphs.png', dpi=150, bbox_inches='tight')
     
 
 def fig_kemeny_vs_transition_probability() -> None:
@@ -116,8 +116,8 @@ def fig_kemeny_vs_transition_probability() -> None:
     ax.set_ylabel(r'$K(P)$')
     ax.legend()
     plt.tight_layout()
-    plt.savefig('kemeny_vs_p.pdf')
-    plt.savefig('kemeny_vs_p.png', dpi=150, bbox_inches='tight')
+    plt.savefig('results/figures/kemeny_vs_p.pdf')
+    plt.savefig('results/figures/kemeny_vs_p.png', dpi=150, bbox_inches='tight')
 
 
 def fig_estimation_error_vs_trajectory_length(seed: int = 42) -> None:
@@ -172,8 +172,8 @@ def fig_estimation_error_vs_trajectory_length(seed: int = 42) -> None:
     ax.set_xlabel(r'Trajectory Length $T$')
     ax.set_ylabel(r'$\|\hat{\bar{P}} - \bar{P}\|_F$')
     plt.tight_layout()
-    plt.savefig('estimation_errors.pdf')
-    plt.savefig('estimation_errors.png', dpi=150, bbox_inches='tight')
+    plt.savefig('results/figures/estimation_errors.pdf')
+    plt.savefig('results/figures/estimation_errors.png', dpi=150, bbox_inches='tight')
 
 
 def fig_mean_capture_time_convergence(seed: int = 42) -> None:
@@ -250,8 +250,8 @@ def fig_mean_capture_time_convergence(seed: int = 42) -> None:
     ax.set_ylabel('Mean Capture Time')
     ax.legend()
     plt.tight_layout()
-    plt.savefig('mean_capture_time.pdf')
-    plt.savefig('mean_capture_time.png', dpi=150, bbox_inches='tight')
+    plt.savefig('results/figures/mean_capture_time.pdf')
+    plt.savefig('results/figures/mean_capture_time.png', dpi=150, bbox_inches='tight')
 
 
 def _fmt_sig3(x: float | None, sign: bool = False) -> str:
@@ -534,9 +534,9 @@ def fig_erdos_renyi_kemeny_percent_decrease(
         ax.axvline(0, color='gray', lw=0.8, ls=':', zorder=0)
 
     plt.tight_layout()
-    plt.savefig('results/erdos_renyi_kemeny_percent_decrease.pdf', bbox_inches='tight')
-    plt.savefig('results/erdos_renyi_kemeny_percent_decrease.png', dpi=150, bbox_inches='tight')
-    print("Saved: results/erdos_renyi_kemeny_percent_decrease.pdf / .png")
+    plt.savefig('results/figures/erdos_renyi_kemeny_percent_decrease.pdf', bbox_inches='tight')
+    plt.savefig('results/figures/erdos_renyi_kemeny_percent_decrease.png', dpi=150, bbox_inches='tight')
+    print("Saved: results/figures/erdos_renyi_kemeny_percent_decrease.pdf / .png")
 
 
 def fig_erdos_renyi_stackelberg_percent_increase(
@@ -621,9 +621,9 @@ def fig_erdos_renyi_stackelberg_percent_increase(
         ax.axvline(0, color='gray', lw=0.8, ls=':', zorder=0)
 
     plt.tight_layout()
-    plt.savefig('results/erdos_renyi_stackelberg_percent_increase.pdf', bbox_inches='tight')
-    plt.savefig('results/erdos_renyi_stackelberg_percent_increase.png', dpi=150, bbox_inches='tight')
-    print("Saved: results/erdos_renyi_stackelberg_percent_increase.pdf / .png")
+    plt.savefig('results/figures/erdos_renyi_stackelberg_percent_increase.pdf', bbox_inches='tight')
+    plt.savefig('results/figures/erdos_renyi_stackelberg_percent_increase.png', dpi=150, bbox_inches='tight')
+    print("Saved: results/figures/erdos_renyi_stackelberg_percent_increase.pdf / .png")
 
 
 def fig_erdos_renyi_rte_percent_increase(
@@ -708,9 +708,9 @@ def fig_erdos_renyi_rte_percent_increase(
         ax.axvline(0, color='gray', lw=0.8, ls=':', zorder=0)
 
     plt.tight_layout()
-    plt.savefig('results/erdos_renyi_rte_percent_increase.pdf', bbox_inches='tight')
-    plt.savefig('results/erdos_renyi_rte_percent_increase.png', dpi=150, bbox_inches='tight')
-    print("Saved: results/erdos_renyi_rte_percent_increase.pdf / .png")
+    plt.savefig('results/figures/erdos_renyi_rte_percent_increase.pdf', bbox_inches='tight')
+    plt.savefig('results/figures/erdos_renyi_rte_percent_increase.png', dpi=150, bbox_inches='tight')
+    print("Saved: results/figures/erdos_renyi_rte_percent_increase.pdf / .png")
 
 
 def fig_erdos_renyi_combined_ridgelines(
@@ -754,9 +754,9 @@ def fig_erdos_renyi_combined_ridgelines(
         ax.axis('off')
 
     plt.subplots_adjust(hspace=0.02)
-    plt.savefig('results/erdos_renyi_combined_ridgelines.pdf', bbox_inches='tight')
-    plt.savefig('results/erdos_renyi_combined_ridgelines.png', dpi=150, bbox_inches='tight')
-    print("Saved: results/erdos_renyi_combined_ridgelines.pdf / .png")
+    plt.savefig('results/figures/erdos_renyi_combined_ridgelines.pdf', bbox_inches='tight')
+    plt.savefig('results/figures/erdos_renyi_combined_ridgelines.png', dpi=150, bbox_inches='tight')
+    print("Saved: results/figures/erdos_renyi_combined_ridgelines.pdf / .png")
 
 
 def _select_phys_lift(
@@ -957,9 +957,9 @@ def fig_san_francisco_mean_capture_time_convergence(
     ax.set_ylabel('Mean Capture Time')
     ax.legend()
     plt.tight_layout()
-    plt.savefig('results/san_francisco_mean_capture_time.pdf', bbox_inches='tight')
-    plt.savefig('results/san_francisco_mean_capture_time.png', dpi=150, bbox_inches='tight')
-    print("Saved: results/san_francisco_mean_capture_time.pdf / .png")
+    plt.savefig('results/figures/san_francisco_mean_capture_time.pdf', bbox_inches='tight')
+    plt.savefig('results/figures/san_francisco_mean_capture_time.png', dpi=150, bbox_inches='tight')
+    print("Saved: results/figures/san_francisco_mean_capture_time.pdf / .png")
 
 
 def fig_lifting_budget_sweep_boxplot(
@@ -1049,9 +1049,9 @@ def fig_lifting_budget_sweep_boxplot(
     ax.set_ylabel('Decrease in Kemeny Constant [%]')
     ax.legend(title='Lifting Method')
     plt.tight_layout()
-    plt.savefig('results/lifting_budget_sweep_boxplot.pdf')
-    plt.savefig('results/lifting_budget_sweep_boxplot.png', dpi=150)
-    print("Saved: results/lifting_budget_sweep_boxplot.pdf / .png")
+    plt.savefig('results/figures/lifting_budget_sweep_boxplot.pdf')
+    plt.savefig('results/figures/lifting_budget_sweep_boxplot.png', dpi=150)
+    print("Saved: results/figures/lifting_budget_sweep_boxplot.pdf / .png")
 
 
 if __name__ == "__main__":

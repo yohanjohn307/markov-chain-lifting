@@ -5,4 +5,13 @@ __pycache__/
 *.npy
 *.pdf
 *.png
-debug.ipynb
+
+# Notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Virtual environment
+.venv/
+
+# OS
+.DS_Store

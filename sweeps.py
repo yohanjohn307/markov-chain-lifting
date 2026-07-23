@@ -49,7 +49,7 @@ def erdos_renyi_kemeny_improvement(
     max_grad_norm_phys: float | None = 2000.0,
     max_grad_norm_lift: float | None = 200.0,
     seed: int = 42,
-    save_path: str = 'erdos_renyi_kemeny_diffs.npy',
+    save_path: str = 'results/data/erdos_renyi_kemeny_diffs.npy',
 ) -> None:
     """Ridgeline data for Kemeny improvement via stationary-distribution lifting vs.
     Erdős-Rényi edge probability p. For each p, generates n_graphs random connected
@@ -219,7 +219,7 @@ def erdos_renyi_stackelberg_improvement(
     max_grad_norm_phys: float | None = None,
     max_grad_norm_lift: float | None = None,
     seed: int = 42,
-    save_path: str = 'erdos_renyi_stackelberg_diffs.npy',
+    save_path: str = 'results/data/erdos_renyi_stackelberg_diffs.npy',
 ) -> None:
     """Ridgeline data for Stackelberg improvement via stationary-distribution lifting
     vs. Erdős-Rényi edge probability p. Analogous to erdos_renyi_kemeny_improvement,
@@ -406,7 +406,7 @@ def erdos_renyi_rte_improvement(
     max_grad_norm_phys: float | None = None,
     max_grad_norm_lift: float | None = None,
     seed: int = 42,
-    save_path: str = 'erdos_renyi_rte_diffs.npy',
+    save_path: str = 'results/data/erdos_renyi_rte_diffs.npy',
 ) -> None:
     """Ridgeline data for RTE improvement via stationary-distribution lifting vs.
     Erdős-Rényi edge probability p. Analogous to erdos_renyi_kemeny_improvement, for
@@ -1177,7 +1177,7 @@ def kemeny_lifting_budget_sweep(
     max_grad_norm_phys: float | None = 2000.0,
     max_grad_norm_lift: float | None = 200.0,
     seed: int = 42,
-    save_path: str = 'lifting_budget_sweep.npy',
+    save_path: str = 'results/data/lifting_budget_sweep.npy',
 ) -> None:
     """Compare six lifting-budget allocation heuristics (uniform, stationary, degree,
     betweenness, eigenvector, reversible_flow -- see graph.proportional_lifting and
