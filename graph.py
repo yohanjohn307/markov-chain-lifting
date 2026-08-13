@@ -74,27 +74,34 @@ def _lifting(deg: np.ndarray) -> np.ndarray:
     return V
 
 
+def _webster_apportion(weights: np.ndarray, seats: int) -> np.ndarray:
+    """Apportion `seats` integer units across weights using Webster's method
+    (Sainte-Laguë highest averages): seats are awarded one at a time to
+    whichever node currently has the highest weight[i] / (2*count[i] + 1).
+    """
+    m = weights.shape[0]
+    counts = np.zeros(m, dtype=int)
+    if seats <= 0:
+        return counts
+    w = weights if weights.sum() > 0 else np.ones(m)
+    for _ in range(seats):
+        priorities = w / (2 * counts + 1)
+        counts[np.argmax(priorities)] += 1
+    return counts
+
+
 def proportional_lifting(weights: np.ndarray, budget: int) -> np.ndarray:
     """Build a (budget, m) lifting mapping matrix with virtual-state counts
     proportional to weights. Each physical node gets at least one virtual state;
-    the remaining budget - m are apportioned by the largest-remainder (Hamilton)
-    method so counts sum exactly to budget.
+    the remaining budget - m are apportioned by Webster's (Sainte-Laguë) method
+    so counts sum exactly to budget.
     """
     weights = np.asarray(weights, dtype=float)
     m = weights.shape[0]
     if budget < m:
         raise ValueError(f"budget ({budget}) must be at least the number of nodes ({m})")
     remaining = budget - m
-    if weights.sum() > 0:
-        shares = remaining * weights / weights.sum()
-    else:
-        shares = np.full(m, remaining / m)
-    extra = np.floor(shares).astype(int)
-    leftover = remaining - int(extra.sum())
-    frac = shares - extra
-    order = np.argsort(-frac)
-    extra[order[:leftover]] += 1
-    counts = np.ones(m, dtype=int) + extra
+    counts = np.ones(m, dtype=int) + _webster_apportion(weights, remaining)
     return _lifting(counts)
 
 
@@ -137,13 +144,6 @@ def eigenvector_lifting(A: np.ndarray, budget: int) -> np.ndarray:
     G = nx.from_numpy_array(A - np.diag(np.diag(A)), create_using=nx.DiGraph)
     ec = nx.eigenvector_centrality(G, max_iter=1000)
     weights = np.array([ec[i] for i in range(m)])
-    return proportional_lifting(weights, budget)
-
-
-def reversible_flow_lifting(Q_bar: np.ndarray, budget: int) -> np.ndarray:
-    """proportional_lifting weighted by x_i = sum_j min(q_bar_ij, q_bar_ji), the
-    portion of node i's ergodic flow balanced (back-and-forth) with its neighbors."""
-    weights = np.minimum(Q_bar, Q_bar.T).sum(axis=1)
     return proportional_lifting(weights, budget)
 
 

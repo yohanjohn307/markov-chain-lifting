@@ -19,7 +19,6 @@ from graph import (
     stationary_lifting,
     betweenness_lifting,
     eigenvector_lifting,
-    reversible_flow_lifting,
 )
 from optimize import (
     _grad_kemeny,
@@ -564,7 +563,7 @@ def san_francisco_kemeny_improvement(
     w_max: int | None = None,
     lifting_budget: int | None = None,
     n_trials: int = 10,
-    n_init: int = 3,
+    n_init: int = 10,
     n_iter_phys: int = 150,
     alpha_phys: float = 4e-3,
     tol_phys: float = 1e-5,
@@ -699,7 +698,7 @@ def san_francisco_stackelberg_improvement(
     w_max: int | None = None,
     lifting_budget: int | None = None,
     n_trials: int = 10,
-    n_init: int = 3,
+    n_init: int = 10,
     n_iter_phys: int = 250,
     alpha_phys: float = 1.0,
     tol_phys: float = 1e-6,
@@ -859,7 +858,7 @@ def san_francisco_rte_improvement(
     w_max: int | None = None,
     lifting_budget: int | None = None,
     n_trials: int = 10,
-    n_init: int = 3,
+    n_init: int = 10,
     n_iter_phys: int = 200,
     alpha_phys: float = 1e-2,
     tol_phys: float = 1e-6,
@@ -1179,18 +1178,16 @@ def kemeny_lifting_budget_sweep(
     seed: int = 42,
     save_path: str = 'results/data/lifting_budget_sweep.npy',
 ) -> None:
-    """Compare six lifting-budget allocation heuristics (uniform, stationary, degree,
-    betweenness, eigenvector, reversible_flow -- see graph.proportional_lifting and
-    its callers) across a budget sweep, over many random graphs. For each of n_graphs
-    random undirected G(m, p) (p ~ Uniform(p_range), pi_bar ~ Dirichlet(concentration
-    * 1_m)): (1) optimizes K(P_bar*) via PGD once per graph as a shared baseline,
-    resampling on degenerate draws; (2) for each budget in budget_values and each
-    heuristic, builds V and optimizes K^lift(P*) via PGD; (3) records
-    K(P_bar*) - K^lift(P*) per (budget, method) with status
-    'success'/'no_improvement'/'all_failed'. reversible_flow is built fresh per graph
-    from that graph's physical optimum; the other five depend only on A/pi_bar.
-    budget_values defaults to multiples of m from m (no lifting) to 4m. See NOTES.md
-    for max_grad_norm_lift tuning rationale.
+    """Compare five lifting-budget allocation heuristics (uniform, stationary, degree,
+    betweenness, eigenvector -- see graph.proportional_lifting and its callers) across
+    a budget sweep, over many random graphs. For each of n_graphs random undirected
+    G(m, p) (p ~ Uniform(p_range), pi_bar ~ Dirichlet(concentration * 1_m)):
+    (1) optimizes K(P_bar*) via PGD once per graph as a shared baseline, resampling on
+    degenerate draws; (2) for each budget in budget_values and each heuristic, builds V
+    and optimizes K^lift(P*) via PGD; (3) records K(P_bar*) - K^lift(P*) per
+    (budget, method) with status 'success'/'no_improvement'/'all_failed'. All five
+    methods depend only on A/pi_bar. budget_values defaults to multiples of m from m
+    (no lifting) to 4m. See NOTES.md for max_grad_norm_lift tuning rationale.
     """
     if budget_values is None:
         budget_values = np.arange(m, 4 * m + 1, m)
@@ -1198,7 +1195,7 @@ def kemeny_lifting_budget_sweep(
     rng = np.random.default_rng(seed)
 
     lifting_method_names = [
-        'uniform', 'stationary', 'degree', 'betweenness', 'eigenvector', 'reversible_flow',
+        'uniform', 'stationary', 'degree', 'betweenness', 'eigenvector',
     ]
 
     p_values: list[float] = []
@@ -1255,7 +1252,6 @@ def kemeny_lifting_budget_sweep(
             'degree': lambda budget: degree_lifting(A, budget),
             'betweenness': lambda budget: betweenness_lifting(A, budget),
             'eigenvector': lambda budget: eigenvector_lifting(A, budget),
-            'reversible_flow': lambda budget: reversible_flow_lifting(best_Q_bar, budget),
         }
 
         results = {
@@ -1762,13 +1758,116 @@ def ctcv_rte_improvement(
 
 
 if __name__ == "__main__":
-    # See NOTES.md for the invocations (and approximate wall-clock times) used to
-    # generate every saved results file referenced throughout this module.
-    _t0 = time.time()
-    ctcv_rte_improvement(
-        lifting_budget=3 * 18,
-        n_trials=10,
-        seed=42,
-        save_path='results/data/ctcv_rte_diffs.npy',
-    )
-    print(f"CTCV RTE elapsed: {time.time() - _t0:.1f}s")
+    # # This took 7 hrs
+    # _t0 = time.time()
+    # erdos_renyi_kemeny_improvement(
+    #     m=10,
+    #     p_values=np.linspace(0.25, 0.75, 6),
+    #     n_graphs=50,
+    #     n_init=10,
+    #     budget=30,
+    #     n_iter_phys=150,
+    #     alpha_phys=2e-3,
+    #     tol_phys=1e-5,
+    #     n_iter_lift=150,
+    #     alpha_lift=2e-3,
+    #     tol_lift=1e-5,
+    #     seed=42,
+    #     save_path='results/data/3m/erdos_renyi_kemeny_diffs.npy'
+    # )
+    # print(f"E-R Kemeny elapsed: {time.time() - _t0:.1f}s")
+
+    # # This took 9 hrs
+    # _t0 = time.time()
+    # erdos_renyi_stackelberg_improvement(
+    #     m=10,
+    #     p_values=np.linspace(0.25, 0.75, 6),
+    #     n_graphs=50,
+    #     n_init=10,
+    #     budget=30,
+    #     n_iter_phys=250,
+    #     alpha_phys=1.0,
+    #     tol_phys=1e-5,
+    #     n_iter_lift=250,
+    #     alpha_lift=1.0,
+    #     tol_lift=1e-6,
+    #     seed=42,
+    #     save_path='results/data/3m/erdos_renyi_stackelberg_diffs.npy'
+    # )
+    # print(f"E-R Stackelberg elapsed: {time.time() - _t0:.1f}s")
+
+    # # This took 6 hrs
+    # _t0 = time.time()
+    # erdos_renyi_rte_improvement(
+    #     m=10,
+    #     p_values=np.linspace(0.25, 0.75, 6),
+    #     n_graphs=50,
+    #     budget=30,
+    #     n_init=10,
+    #     n_iter_phys=200,
+    #     alpha_phys=1e-2,
+    #     tol_phys=1e-6,
+    #     n_iter_lift=200,
+    #     alpha_lift=1e-3,
+    #     tol_lift=1e-6,
+    #     eta=0.1,
+    #     seed=42,
+    #     save_path='results/data/3m/erdos_renyi_rte_diffs.npy',
+    # )
+    # print(f"E-R RTE elapsed: {time.time() - _t0:.1f}s")
+
+    # # This took 11 hrs
+    # _t0 = time.time()
+    # san_francisco_wmax_sweep(
+    #     lifting_budget=3 * 12,
+    # )
+    # print(f"SF all metrics elapsed: {time.time() - _t0:.1f}s")
+
+    # # This took 10 mins
+    # _t0 = time.time()
+    # ctcv_kemeny_improvement(
+    #     lifting_budget=3 * 18,
+    #     n_trials=10,
+    #     seed=42,
+    #     save_path='results/data/ctcv_kemeny_diffs.npy',
+    # )
+    # print(f"CTCV Kemeny elapsed: {time.time() - _t0:.1f}s")
+
+    # # This took ? mins
+    # _t0 = time.time()
+    # ctcv_stackelberg_improvement(
+    #     lifting_budget=3 * 18,
+    #     n_trials=10,
+    #     seed=42,
+    #     save_path='results/data/ctcv_stackelberg_diffs.npy',
+    # )
+    # print(f"CTCV Stackelberg elapsed: {time.time() - _t0:.1f}s")
+
+    # # This took 15 mins
+    # _t0 = time.time()
+    # ctcv_rte_improvement(
+    #     lifting_budget=3 * 18,
+    #     n_trials=10,
+    #     seed=42,
+    #     save_path='results/data/ctcv_rte_diffs.npy',
+    # )
+    # print(f"CTCV RTE elapsed: {time.time() - _t0:.1f}s")
+
+    # # This took 8 hrs
+    # _t0 = time.time()
+    # m = 10
+    # kemeny_lifting_budget_sweep(
+    #     m=m,
+    #     n_graphs=50,
+    #     p_range=(0.25, 0.75),
+    #     budget_values = [round(1.25*m), round(1.5*m), round(1.75*m), 2*m, round(2.25*m), round(2.5*m), round(2.75*m), 3*m],
+    #     n_init=10,
+    #     n_iter_phys=150,
+    #     alpha_phys=2e-3,
+    #     tol_phys=1e-5,
+    #     n_iter_lift=150,
+    #     alpha_lift=2e-3,
+    #     tol_lift=1e-5,
+    #     seed=42,
+    # )
+    # print(f"Lifting budget sweep elapsed: {time.time() - _t0:.1f}s")

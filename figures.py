@@ -12,13 +12,17 @@ from metrics import (
 from graph import erdos_renyi_graph, erdos_renyi_digraph
 
 plt.rcParams.update({
+    'font.family': 'serif',
+    'font.serif': ['cmr10'],
+    'axes.formatter.use_mathtext': True,  # avoid DejaVu fallback for tick labels' minus signs
+    'mathtext.fontset': 'cm',
     'font.size': 16,
-    'axes.titlesize': 18,
-    'axes.labelsize': 18,
-    'xtick.labelsize': 15,
-    'ytick.labelsize': 15,
-    'legend.fontsize': 15,
-    'legend.title_fontsize': 15,
+    'axes.titlesize': 16,
+    'axes.labelsize': 16,
+    'xtick.labelsize': 13,
+    'ytick.labelsize': 13,
+    'legend.fontsize': 13,
+    'legend.title_fontsize': 13,
 })
 
 
@@ -46,7 +50,7 @@ def fig_random_graphs(m: int = 10, p_values=None, seed: int = 42) -> None:
         nx.draw_networkx(G, pos=pos, ax=ax,
                          node_color=pi_bar, cmap='viridis', vmin=vmin, vmax=vmax,
                          node_size=700, font_color='white', font_weight='bold')
-        ax.set_title(f'Erdős–Rényi $G({m},\\ {p})$', pad=12)
+        ax.set_title(f'Erdos-Renyi $G({m},\\ {p})$', pad=12)
 
     sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
     sm.set_array([])
@@ -83,7 +87,7 @@ def fig_random_digraphs(m: int = 10, p_values=None, seed: int = 42) -> None:
                          node_size=700, font_color='white', font_weight='bold',
                          arrows=True, arrowstyle='-|>', arrowsize=15,
                          connectionstyle='arc3,rad=0.1')
-        ax.set_title(f'Erdős–Rényi $D({m},\\ {p})$', pad=12)
+        ax.set_title(f'Erdos-Renyi $D({m},\\ {p})$', pad=12)
 
     sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
     sm.set_array([])
@@ -95,9 +99,19 @@ def fig_random_digraphs(m: int = 10, p_values=None, seed: int = 42) -> None:
     
 
 def fig_kemeny_vs_transition_probability() -> None:
-    """Reproduce Fig. 2: Kemeny constant of the lifted MC vs. transition probability p."""
+    """Reproduce Fig. 2: Kemeny constant of the lifted MC vs. transition probability p,
+    with the lifted Kemeny constant K_lift(P) overlaid."""
+    V = np.array([
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1],
+        [0, 0, 1, 0],
+        [0, 1, 0, 0],
+    ])
     pvec = np.linspace(0, 1, 100)
     kvec = []
+    klift_vec = []
     for p in pvec:
         P = np.array([
             [0,   p,   0,   0,   0,   1-p],
@@ -108,21 +122,24 @@ def fig_kemeny_vs_transition_probability() -> None:
             [p,   0,   0,   0,   1-p, 0  ],
         ])
         kvec.append(kemeny(P))
+        klift_vec.append(lifted_kemeny(P, V))
 
     fig, ax = plt.subplots()
-    ax.plot(pvec, kvec)
-    ax.axhline(25/6, linestyle='--', label=r'$K(\bar{P}) = 25/6$')
-    ax.set_xlabel(r'$p$')
-    ax.set_ylabel(r'$K(P)$')
+    ax.axhline(25/6, linestyle='--', label=r'$\mathcal{K}(\bar{P}) = 25/6$')
+    ax.plot(pvec, kvec, label=r'$\mathcal{K}(P)$')
+    ax.plot(pvec, klift_vec, label=r'$\mathcal{K}^{\mathrm{lift}}(P)$')
+    ax.set_xlabel(r'Transition Probability $p$')
+    ax.set_ylabel(r'Kemeny Constant')
     ax.legend()
     plt.tight_layout()
     plt.savefig('results/figures/kemeny_vs_p.pdf')
     plt.savefig('results/figures/kemeny_vs_p.png', dpi=150, bbox_inches='tight')
 
 
-def fig_estimation_error_vs_trajectory_length(seed: int = 42) -> None:
-    """Reproduce Fig. 3: MLE estimation error vs. trajectory length. Proposition 4
-    guarantees this converges to P_bar, so the error should decay to zero.
+def fig_estimation_error_vs_trajectory_length(seed: int = 0, n_realizations: int = 50) -> None:
+    """Reproduce Fig. 3: MLE estimation error vs. trajectory length, averaged over
+    n_realizations independent random trajectories. Proposition 4 guarantees this
+    converges to P_bar, so the error should decay to zero.
     """
     rng = np.random.default_rng(seed)
     p = 0.9
@@ -148,39 +165,49 @@ def fig_estimation_error_vs_trajectory_length(seed: int = 42) -> None:
     pi = stationary_distribution(P)
     Pbar, _ = collapsing(P, V)
 
-    x0 = rng.choice(n, p=pi)
-    x = [x0]
-    for _ in range(2000 - 1):
-        x.append(rng.choice(n, p=P[x[-1]]))
-    y = [virtual_to_physical[xi] for xi in x]
+    T = np.unique(np.geomspace(10, 2000, num=200).astype(int))
+    all_errors = np.empty((n_realizations, len(T)))
 
-    T = np.arange(10, 2000, 10)
-    estimation_errors = []
-    counts = np.zeros((m, m))
-    prev = 0
-    for t in T:
-        for i in range(prev, t - 1):
-            counts[y[i], y[i + 1]] += 1
-        prev = t - 1
-        row_sums = counts.sum(axis=1, keepdims=True)
-        row_sums[row_sums == 0] = 1  # unvisited rows stay zero after division
-        P_est = counts / row_sums
-        estimation_errors.append(np.linalg.norm(Pbar - P_est, ord='fro'))
+    for r in range(n_realizations):
+        x0 = rng.choice(n, p=pi)
+        x = [x0]
+        for _ in range(2000 - 1):
+            x.append(rng.choice(n, p=P[x[-1]]))
+        y = [virtual_to_physical[xi] for xi in x]
+
+        counts = np.zeros((m, m))
+        prev = 0
+        for idx, t in enumerate(T):
+            for i in range(prev, t - 1):
+                counts[y[i], y[i + 1]] += 1
+            prev = t - 1
+            row_sums = counts.sum(axis=1, keepdims=True)
+            row_sums[row_sums == 0] = 1  # unvisited rows stay zero after division
+            P_est = counts / row_sums
+            all_errors[r, idx] = np.linalg.norm(Pbar - P_est, ord='fro')
+
+    median_errors = np.median(all_errors, axis=0)
+    q25 = np.maximum(np.percentile(all_errors, 25, axis=0), 1e-300)
+    q75 = np.percentile(all_errors, 75, axis=0)
 
     fig, ax = plt.subplots()
-    ax.plot(T, estimation_errors)
+    ax.plot(T, median_errors, label='Median')
+    ax.fill_between(T, q25, q75, alpha=0.3, label='IQR')
+    ax.set_xscale('log')
+    ax.set_yscale('log')
     ax.set_xlabel(r'Trajectory Length $T$')
-    ax.set_ylabel(r'$\|\hat{\bar{P}} - \bar{P}\|_F$')
+    ax.set_ylabel(r'$\|\hat{P} - \bar{P}\|_F$')
+    ax.legend()
     plt.tight_layout()
     plt.savefig('results/figures/estimation_errors.pdf')
     plt.savefig('results/figures/estimation_errors.png', dpi=150, bbox_inches='tight')
 
 
-def fig_mean_capture_time_convergence(seed: int = 42) -> None:
+def fig_mean_capture_time_convergence(seed: int = 42, n_realizations: int = 50) -> None:
     """Reproduce Fig. 4: empirical mean capture time vs. number of trials for P_bar and
-    lifted P. For P_bar the mean converges to K(P_bar); for lifted P it converges to
-    K^lift(P), not K(P), demonstrating that the lifted Kemeny constant is the correct
-    performance metric.
+    lifted P, averaged over n_realizations independent experiments. For P_bar the mean
+    converges to K(P_bar); for lifted P it converges to K^lift(P), not K(P), demonstrating
+    that the lifted Kemeny constant is the correct performance metric.
     """
     rng = np.random.default_rng(seed)
     Pbar = np.array([[0, 1, 0, 0], [0.5, 0, 0.5, 0], [0, 0.5, 0, 0.5], [0, 0, 1, 0]])
@@ -209,46 +236,57 @@ def fig_mean_capture_time_convergence(seed: int = 42) -> None:
     pi = stationary_distribution(P)
 
     N_trials = 3000
-
-    # patroller and adversary drawn from pi_bar; count first-passage steps
-    capture_times_bar = []
-    for _ in range(N_trials):
-        patroller = rng.choice(m, p=pi_bar)
-        adversary = rng.choice(m, p=pi_bar)
-        t = 0
-        while True:
-            patroller = rng.choice(m, p=Pbar[patroller])
-            t += 1
-            if patroller == adversary:
-                break
-        capture_times_bar.append(t)
-
-    # patroller drawn from pi (virtual), adversary drawn from pi_bar (physical)
-    capture_times_lift = []
-    for _ in range(N_trials):
-        patroller = rng.choice(n, p=pi)
-        adversary = rng.choice(m, p=pi_bar)
-        t = 0
-        while True:
-            patroller = rng.choice(n, p=P[patroller])
-            t += 1
-            if virtual_to_physical[patroller] == adversary:
-                break
-        capture_times_lift.append(t)
-
     trials = np.arange(1, N_trials + 1)
-    mean_bar  = np.cumsum(capture_times_bar)  / trials
-    mean_lift = np.cumsum(capture_times_lift) / trials
+    all_mean_bar = np.empty((n_realizations, N_trials))
+    all_mean_lift = np.empty((n_realizations, N_trials))
+
+    for r in range(n_realizations):
+        # patroller and adversary drawn from pi_bar; count first-passage steps
+        capture_times_bar = []
+        for _ in range(N_trials):
+            patroller = rng.choice(m, p=pi_bar)
+            adversary = rng.choice(m, p=pi_bar)
+            t = 0
+            while True:
+                patroller = rng.choice(m, p=Pbar[patroller])
+                t += 1
+                if patroller == adversary:
+                    break
+            capture_times_bar.append(t)
+
+        # patroller drawn from pi (virtual), adversary drawn from pi_bar (physical)
+        capture_times_lift = []
+        for _ in range(N_trials):
+            patroller = rng.choice(n, p=pi)
+            adversary = rng.choice(m, p=pi_bar)
+            t = 0
+            while True:
+                patroller = rng.choice(n, p=P[patroller])
+                t += 1
+                if virtual_to_physical[patroller] == adversary:
+                    break
+            capture_times_lift.append(t)
+
+        all_mean_bar[r]  = np.cumsum(capture_times_bar)  / trials
+        all_mean_lift[r] = np.cumsum(capture_times_lift) / trials
+
+    median_bar  = np.median(all_mean_bar, axis=0)
+    q25_bar, q75_bar = np.percentile(all_mean_bar, [25, 75], axis=0)
+    median_lift = np.median(all_mean_lift, axis=0)
+    q25_lift, q75_lift = np.percentile(all_mean_lift, [25, 75], axis=0)
 
     fig, ax = plt.subplots()
-    ax.plot(trials, mean_bar,  label=r'Empirical Mean Capture Time $\bar{P}$')
-    ax.plot(trials, mean_lift, label=r'Empirical Mean Capture Time $P$', color='orange')
-    ax.axhline(kemeny(Pbar),        linestyle='--', label=r'$K(\bar{P})$')
-    ax.axhline(lifted_kemeny(P, V), linestyle='--', label=r'$K^{\mathrm{lift}}(P)$', color='orange')
-    ax.axhline(kemeny(P),           linestyle='--', label=r'$K(P)$', color='green')
+    ax.axhline(kemeny(Pbar),        linestyle='--', label=r'$\mathcal{K}(\bar{P})$')
+    ax.plot(trials, median_bar,  label=r'Empirical Capture Time $\bar{P}$')
+    ax.fill_between(trials, q25_bar, q75_bar, alpha=0.3)
+    ax.axhline(lifted_kemeny(P, V), linestyle='--', label=r'$\mathcal{K}^{\mathrm{lift}}(P)$', color='orange')
+    ax.plot(trials, median_lift, label=r'Empirical Capture Time $P$', color='orange')
+    ax.fill_between(trials, q25_lift, q75_lift, alpha=0.3, color='orange')
+    ax.axhline(kemeny(P),           linestyle='--', label=r'$\mathcal{K}(P)$', color='red')
+    ax.set_xscale('log')
     ax.set_xlabel('Number of Trials')
     ax.set_ylabel('Mean Capture Time')
-    ax.legend()
+    ax.legend(loc='lower right')
     plt.tight_layout()
     plt.savefig('results/figures/mean_capture_time.pdf')
     plt.savefig('results/figures/mean_capture_time.png', dpi=150, bbox_inches='tight')
@@ -270,6 +308,14 @@ def _fmt_pct_value(x: float | None) -> str:
     percentage string with 3 significant figures. Returns '-' for None.
     """
     return f"{_fmt_sig3(100 * x)}%" if x is not None else "-"
+
+
+def _perplexity(h: float) -> float:
+    """Convert a (truncated) return-time entropy value in nats, as computed by
+    metrics.return_time_entropy/lifted_return_time_entropy, to perplexity
+    (exp(entropy)) -- the unit RTE is reported in throughout the manuscript.
+    """
+    return float(np.exp(h))
 
 
 def print_computation_time_table(
@@ -352,8 +398,8 @@ def print_san_francisco_table(
     """Print the San Francisco case study results for Table II, alongside the [31]/[33]
     literature baselines (literature constants, not recomputed here). The kemeny/
     stackelberg/rte phys/lift arguments are the "Proposed" row's values -- the
-    physical/lifted pair from the single largest-improvement trial, as returned by
-    fig_san_francisco_kemeny/_stackelberg/_rte respectively.
+    physical/lifted pair from the trial with the best-performing physical MC, as
+    returned by fig_san_francisco_kemeny/_stackelberg/_rte respectively.
     """
     rows = [
         ('Proposed', kemeny_phys, kemeny_lift, stackelberg_phys, stackelberg_lift, rte_phys, rte_lift),
@@ -383,11 +429,12 @@ def print_san_francisco_wmax_table(
     rte_manifest: dict | None = None,
 ) -> None:
     """Print physical/lifted Kemeny/Stackelberg/RTE metrics vs. pruning threshold w_max
-    for the San Francisco case study. Each manifest is as in
+    for the San Francisco case study (Table II). Each manifest is as in
     print_san_francisco_wmax_computation_time_table. Recomputes each successful
     w_max's physical/lifted values via fig_san_francisco_kemeny/stackelberg/rte, so
     the printed pair is jointly achievable from one trial rather than a mix-and-match
-    of separate optimizations.
+    of separate optimizations. RTE Phys./Lift./%Δ are reported as perplexity
+    (exp of the truncated return-time entropy), per fig_san_francisco_rte.
     """
     fig_fns = {
         'kemeny': fig_san_francisco_kemeny,
@@ -527,7 +574,7 @@ def fig_erdos_renyi_kemeny_percent_decrease(
         overlap=0.4,  # type: ignore[arg-type]
     )
     axes[-1].set_xlabel(
-        r'Decrease in Kemeny Constant [%]',
+        r'Improvement in Kemeny Constant [%]',
         fontsize=18,
     )
     for ax in axes:
@@ -537,6 +584,100 @@ def fig_erdos_renyi_kemeny_percent_decrease(
     plt.savefig('results/figures/erdos_renyi_kemeny_percent_decrease.pdf', bbox_inches='tight')
     plt.savefig('results/figures/erdos_renyi_kemeny_percent_decrease.png', dpi=150, bbox_inches='tight')
     print("Saved: results/figures/erdos_renyi_kemeny_percent_decrease.pdf / .png")
+
+
+def fig_erdos_renyi_kemeny_percent_of_conductance_bound(
+    data_path: str = 'results/data/erdos_renyi_kemeny_diffs.npy',
+) -> None:
+    """Ridgeline plot of the percent of the theoretically possible Kemeny constant
+    improvement attained by stationary-distribution lifting, vs. Erdős-Rényi edge
+    probability p. Loads the raw results saved by sweeps.erdos_renyi_kemeny_improvement,
+    recomputes K(P_bar*) and K^lift(P*) from the stored ergodic flow matrices and V, and
+    reports 100 * (K(P_bar*) - K^lift(P*)) / (K(P_bar*) - conductance_lb), where
+    conductance_lb = 1/(2*Phi(P_bar*)) is the Corollary 9 lower bound on the optimal
+    lifted Kemeny constant. 0% means lifting achieved no improvement over the physical
+    MC; 100% means lifting exactly attained the conductance lower bound.
+    """
+    data = np.load(data_path, allow_pickle=True).item()
+    p_values = data['p_values']
+    all_Q_bar = data['Q_bar']
+    all_Q_lift = data['Q_lift']
+    all_V = data['V']
+    all_times_phys = data['times_phys']
+    all_times_lift = data['times_lift']
+    all_conductance_lb = data['conductance_lb']
+
+    all_pct: list[list[float]] = []
+    mean_times_phys: list[float] = []
+    mean_times_lift: list[float] = []
+    for p_idx, p in enumerate(p_values):
+        pct_p: list[float] = []
+        for Q_bar, Q_lift, V, conductance_lb in zip(
+            all_Q_bar[p_idx], all_Q_lift[p_idx], all_V[p_idx], all_conductance_lb[p_idx]
+        ):
+            if Q_bar is None or Q_lift is None:
+                continue
+            P_bar = ergodic_flow_to_transition(Q_bar)
+            P_lift = ergodic_flow_to_transition(Q_lift)
+            k_phys = kemeny(P_bar)
+            k_lift = lifted_kemeny(P_lift, V)
+            gap = k_phys - conductance_lb
+            if gap > 0:
+                pct_p.append(100.0 * (k_phys - k_lift) / gap)
+        times_phys_p = all_times_phys[p_idx]
+        times_lift_p = all_times_lift[p_idx]
+        mean_times_phys.append(float(np.mean(times_phys_p)) if len(times_phys_p) else float('nan'))
+        mean_times_lift.append(float(np.mean(times_lift_p)) if len(times_lift_p) else float('nan'))
+        print(
+            f"p={p:.2f}: {len(pct_p)} graphs, "
+            + (f"percent of conductance-bound improvement attained = "
+               f"{np.mean(pct_p):.2f}% ± {np.std(pct_p):.2f}%, " if pct_p else "")
+            + (f"mean compute time: phys={np.mean(times_phys_p):.2f}s, lift={np.mean(times_lift_p):.2f}s"
+               if len(times_phys_p) else ""),
+            flush=True,
+        )
+        all_pct.append(pct_p)
+
+    print_computation_time_table('Kemeny', p_values, mean_times_phys, mean_times_lift)
+
+    valid_idx = [i for i, d in enumerate(all_pct) if len(d) >= 2]
+    valid_p = [p_values[i] for i in valid_idx]
+    valid_pct = [all_pct[i] for i in valid_idx]
+
+    all_vals = [v for d in valid_pct for v in d]
+    x_min = float(np.percentile(all_vals, 1))
+    x_max = float(np.percentile(all_vals, 99)) * 1.05
+
+    df = pd.DataFrame(
+        {f'$p={p:.2f}$': pd.Series(
+            [v for v in d if x_min <= v <= x_max]
+        ) for p, d in zip(valid_p, valid_pct)}
+    )
+    n_ridges = len(valid_p)
+
+    _, axes = joypy.joyplot(
+        df,
+        figsize=(7, 1.0 + 0.7 * n_ridges),
+        colormap=plt.cm.viridis_r,  # type: ignore[attr-defined]
+        linecolor='white',
+        linewidth=0.8,
+        alpha=0.8,
+        x_range=[x_min, x_max],
+        overlap=0.4,  # type: ignore[arg-type]
+    )
+    axes[-1].set_xlabel(
+        r'Fraction of Conductance-Bound Improvement Attained [%]',
+        fontsize=18,
+    )
+    for ax in axes:
+        ax.axvline(0, color='gray', lw=0.8, ls=':', zorder=0)
+        if x_min <= 100 <= x_max:
+            ax.axvline(100, color='gray', lw=0.8, ls=':', zorder=0)
+
+    plt.tight_layout()
+    plt.savefig('results/figures/erdos_renyi_kemeny_percent_of_conductance_bound.pdf', bbox_inches='tight')
+    plt.savefig('results/figures/erdos_renyi_kemeny_percent_of_conductance_bound.png', dpi=150, bbox_inches='tight')
+    print("Saved: results/figures/erdos_renyi_kemeny_percent_of_conductance_bound.pdf / .png")
 
 
 def fig_erdos_renyi_stackelberg_percent_increase(
@@ -614,7 +755,7 @@ def fig_erdos_renyi_stackelberg_percent_increase(
         overlap=0.4,  # type: ignore[arg-type]
     )
     axes[-1].set_xlabel(
-        r'Increase in Stackelberg Metric [%]',
+        r'Improvement in Stackelberg Metric [%]',
         fontsize=18,
     )
     for ax in axes:
@@ -629,11 +770,12 @@ def fig_erdos_renyi_stackelberg_percent_increase(
 def fig_erdos_renyi_rte_percent_increase(
     data_path: str = 'results/data/erdos_renyi_rte_diffs.npy',
 ) -> None:
-    """Ridgeline plot of the percent increase in the Return-Time Entropy metric
-    achieved by lifting, vs. Erdős-Rényi edge probability p. Loads the raw results
-    saved by sweeps.erdos_renyi_rte_improvement, recomputes H(P_bar*) and H^lift(P*)
-    from the stored ergodic flow matrices, and reports
-    100 * (H^lift(P*) - H(P_bar*)) / H(P_bar*).
+    """Ridgeline plot of the percent increase in Return-Time Perplexity achieved by
+    lifting, vs. Erdős-Rényi edge probability p. Loads the raw results saved by
+    sweeps.erdos_renyi_rte_improvement, recomputes H(P_bar*) and H^lift(P*) (nats)
+    from the stored ergodic flow matrices, converts both to perplexity via
+    _perplexity (exp), and reports
+    100 * (exp(H^lift(P*)) - exp(H(P_bar*))) / exp(H(P_bar*)).
     """
     data = np.load(data_path, allow_pickle=True).item()
     p_values = data['p_values']
@@ -658,8 +800,9 @@ def fig_erdos_renyi_rte_percent_increase(
             P_lift = ergodic_flow_to_transition(Q_lift)
             h_phys = return_time_entropy(P_bar, eta, pi=Q_bar.sum(axis=1))
             h_lift = lifted_return_time_entropy(P_lift, V, eta, pi=Q_lift.sum(axis=1))
-            if h_phys > 0:
-                pct_p.append(100.0 * (h_lift - h_phys) / h_phys)
+            perp_phys = _perplexity(h_phys)
+            perp_lift = _perplexity(h_lift)
+            pct_p.append(100.0 * (perp_lift - perp_phys) / perp_phys)
         times_phys_p = all_times_phys[p_idx]
         times_lift_p = all_times_lift[p_idx]
         mean_times_phys.append(float(np.mean(times_phys_p)) if len(times_phys_p) else float('nan'))
@@ -701,7 +844,7 @@ def fig_erdos_renyi_rte_percent_increase(
         overlap=0.4,  # type: ignore[arg-type]
     )
     axes[-1].set_xlabel(
-        r'Increase in Return-Time Entropy [%]',
+        r'Improvement in Return-Time Perplexity [%]',
         fontsize=18,
     )
     for ax in axes:
@@ -759,18 +902,28 @@ def fig_erdos_renyi_combined_ridgelines(
     print("Saved: results/figures/erdos_renyi_combined_ridgelines.pdf / .png")
 
 
+def _select_best_physical_idx(phys_vals: list[float], higher_is_better: bool) -> int:
+    """Return the trial index with the best-performing physical MC (max if
+    higher_is_better else min). Each trial's lifted value is already the best lifting
+    of that trial's own physical MC (sweeps.py constrains the lifted PGD restarts to
+    collapse back onto that specific Q_bar), so pairing on this index yields the
+    best-performing physical MC together with the best-performing lifting of that same
+    physical MC.
+    """
+    return int(np.argmax(phys_vals) if higher_is_better else np.argmin(phys_vals))
+
+
 def _select_phys_lift(
     phys_vals: list[float],
     lift_vals: list[float],
     higher_is_better: bool,
 ) -> tuple[float, float]:
-    """Return the (phys, lift) pair from whichever trial maximizes the improvement from
-    physical to lifted (phys - lift if lower is better, e.g. Kemeny; lift - phys if
-    higher is better, e.g. Stackelberg/RTE), so the reported pair is jointly
-    achievable from one trial rather than mixing independently-best values.
+    """Return the (phys, lift) pair from the trial with the best-performing physical MC
+    (see _select_best_physical_idx), so the reported pair is the best physical MC found
+    across trials paired with the best-performing lifting of that same physical MC --
+    not mixed with a different trial's physical or lifted value.
     """
-    sign = 1 if higher_is_better else -1
-    idx = int(np.argmax([sign * (l - p) for p, l in zip(phys_vals, lift_vals)]))
+    idx = _select_best_physical_idx(phys_vals, higher_is_better)
     return phys_vals[idx], lift_vals[idx]
 
 
@@ -778,9 +931,9 @@ def fig_san_francisco_kemeny(
     data_path: str = 'results/data/san_francisco_kemeny_diffs.npy',
 ) -> tuple[float, float]:
     """Report the physical and lifted (weighted) Kemeny constants achieved on the
-    San Francisco graph (Sec. IX-C / Table II), from the trial with the largest
-    improvement (see _select_phys_lift). Loads the raw results saved by
-    sweeps.san_francisco_kemeny_improvement and recomputes K(P_bar*)/K^lift(P*) for
+    San Francisco graph (Sec. IX-C / Table II), from the trial with the
+    best-performing physical MC (see _select_phys_lift). Loads the raw results saved
+    by sweeps.san_francisco_kemeny_improvement and recomputes K(P_bar*)/K^lift(P*) for
     every trial from the stored ergodic flow matrices.
     """
     data = np.load(data_path, allow_pickle=True).item()
@@ -803,7 +956,7 @@ def fig_san_francisco_kemeny(
     )
     print(
         f"San Francisco Kemeny: {len(kemeny_phys_vals)} trials, "
-        f"K(P_bar*)={best_phys:.3f} K^lift(P*)={best_lift:.3f} (largest-improvement trial); "
+        f"K(P_bar*)={best_phys:.3f} K^lift(P*)={best_lift:.3f} (best-physical trial); "
         f"K(P_bar*) mean={np.mean(kemeny_phys_vals):.3f} ± {np.std(kemeny_phys_vals):.3f}, "
         f"K^lift(P*) mean={np.mean(kemeny_lift_vals):.3f} ± {np.std(kemeny_lift_vals):.3f}",
         flush=True,
@@ -815,9 +968,9 @@ def fig_san_francisco_stackelberg(
     data_path: str = 'results/data/san_francisco_stackelberg_diffs.npy',
 ) -> tuple[float, float]:
     """Report the physical and lifted (weighted) Stackelberg metrics achieved on
-    the San Francisco graph (Appendix A / Table II), from the trial with the largest
-    improvement (see _select_phys_lift). Loads the raw results saved by
-    sweeps.san_francisco_stackelberg_improvement and recomputes J(P_bar*)/J^lift(P*)
+    the San Francisco graph (Appendix A / Table II), from the trial with the
+    best-performing physical MC (see _select_phys_lift). Loads the raw results saved
+    by sweeps.san_francisco_stackelberg_improvement and recomputes J(P_bar*)/J^lift(P*)
     for every trial; V is a per-trial list since each trial's lifting is re-derived
     from that trial's own realized physical stationary distribution, so W_lift is
     recomputed per trial from its own V.
@@ -843,7 +996,7 @@ def fig_san_francisco_stackelberg(
     )
     print(
         f"San Francisco Stackelberg: {len(stb_phys_vals)} trials, "
-        f"J(P_bar*)={best_phys:.3f} J^lift(P*)={best_lift:.3f} (largest-improvement trial); "
+        f"J(P_bar*)={best_phys:.3f} J^lift(P*)={best_lift:.3f} (best-physical trial); "
         f"J(P_bar*) mean={np.mean(stb_phys_vals):.3f} ± {np.std(stb_phys_vals):.3f}, "
         f"J^lift(P*) mean={np.mean(stb_lift_vals):.3f} ± {np.std(stb_lift_vals):.3f}",
         flush=True,
@@ -854,11 +1007,12 @@ def fig_san_francisco_stackelberg(
 def fig_san_francisco_rte(
     data_path: str = 'results/data/san_francisco_rte_diffs.npy',
 ) -> tuple[float, float]:
-    """Report the physical and lifted (weighted) truncated RTE achieved on the
-    San Francisco graph (Appendix B / Table II), from the trial with the largest
-    improvement (see _select_phys_lift). Loads the raw results saved by
-    sweeps.san_francisco_rte_improvement and recomputes H(P_bar*)/H^lift(P*) for
-    every trial from the stored ergodic flow matrices.
+    """Report the physical and lifted (weighted) truncated RTE, as perplexity, achieved
+    on the San Francisco graph (Appendix B / Table II), from the trial with the
+    best-performing physical MC (see _select_phys_lift). Loads the raw results saved by
+    sweeps.san_francisco_rte_improvement, recomputes H(P_bar*)/H^lift(P*) (nats) for
+    every trial from the stored ergodic flow matrices, and converts both to perplexity
+    via _perplexity (exp).
     """
     data = np.load(data_path, allow_pickle=True).item()
     W = data['W']
@@ -873,40 +1027,37 @@ def fig_san_francisco_rte(
     for Q_bar, Q_lift in zip(all_Q_bar, all_Q_lift):
         P_bar = ergodic_flow_to_transition(Q_bar)
         P_lift = ergodic_flow_to_transition(Q_lift)
-        rte_phys_vals.append(return_time_entropy(P_bar, eta, W, pi=Q_bar.sum(axis=1)))
-        rte_lift_vals.append(lifted_return_time_entropy(P_lift, V, eta, W_lift, pi=Q_lift.sum(axis=1)))
+        h_phys = return_time_entropy(P_bar, eta, W, pi=Q_bar.sum(axis=1))
+        h_lift = lifted_return_time_entropy(P_lift, V, eta, W_lift, pi=Q_lift.sum(axis=1))
+        rte_phys_vals.append(_perplexity(h_phys))
+        rte_lift_vals.append(_perplexity(h_lift))
 
     best_phys, best_lift = _select_phys_lift(
         rte_phys_vals, rte_lift_vals, higher_is_better=True,
     )
     print(
         f"San Francisco RTE: {len(rte_phys_vals)} trials, "
-        f"H(P_bar*)={best_phys:.3f} H^lift(P*)={best_lift:.3f} (largest-improvement trial); "
-        f"H(P_bar*) mean={np.mean(rte_phys_vals):.3f} ± {np.std(rte_phys_vals):.3f}, "
-        f"H^lift(P*) mean={np.mean(rte_lift_vals):.3f} ± {np.std(rte_lift_vals):.3f}",
+        f"Perp(P_bar*)={best_phys:.3f} Perp^lift(P*)={best_lift:.3f} (best-physical trial); "
+        f"Perp(P_bar*) mean={np.mean(rte_phys_vals):.3f} ± {np.std(rte_phys_vals):.3f}, "
+        f"Perp^lift(P*) mean={np.mean(rte_lift_vals):.3f} ± {np.std(rte_lift_vals):.3f}",
         flush=True,
     )
     return best_phys, best_lift
 
 
-def fig_san_francisco_mean_capture_time_convergence(
-    data_path: str = 'results/data/san_francisco_kemeny_diffs.npy',
-    seed: int = 42,
-    N_trials: int = 5_000,
-) -> None:
-    """Reproduce Fig. 4's mean-capture-time convergence plot for the San Francisco case
-    study, demonstrating the same phenomenon on real, weighted data. Loads the raw
-    results saved by sweeps.san_francisco_kemeny_improvement, picks the trial
-    minimizing K^lift(P), and simulates a patroller (drawn from pi, lifted) chasing an
-    attacker (drawn from pi_bar, physical), accumulating W-weighted travel time per
-    hop (Eq. 30). The running mean converges to K^lift(P), not K(P_bar) -- what a
-    naive adversary observing only the physical trajectory would expect.
+def fig_ctcv_kemeny(
+    data_path: str = 'results/data/ctcv_kemeny_diffs.npy',
+) -> tuple[float, float]:
+    """Report the physical and lifted (weighted) Kemeny constants achieved on the
+    18-node University of Coimbra (CTCV) campus graph (Sec. IX-D / Table III), from
+    the trial with the best-performing physical MC (see _select_phys_lift). Loads the
+    raw results saved by sweeps.ctcv_kemeny_improvement and recomputes
+    K(P_bar*)/K^lift(P*) for every trial from the stored ergodic flow matrices. Mirrors
+    fig_san_francisco_kemeny.
     """
-    rng = np.random.default_rng(seed)
     data = np.load(data_path, allow_pickle=True).item()
-    V = data['V']
     W = data['W']
-    pi_bar = data['pi_bar']
+    V = data['V']
     all_Q_bar = data['Q_bar']
     all_Q_lift = data['Q_lift']
     W_lift = V @ W @ V.T
@@ -919,47 +1070,124 @@ def fig_san_francisco_mean_capture_time_convergence(
         kemeny_phys_vals.append(kemeny(P_bar, W, pi=Q_bar.sum(axis=1)))
         kemeny_lift_vals.append(lifted_kemeny(P_lift, V, W_lift, pi=Q_lift.sum(axis=1)))
 
-    best_idx = int(np.argmin(kemeny_lift_vals))
-    k_phys = kemeny_phys_vals[best_idx]
-    k_lift = kemeny_lift_vals[best_idx]
-    Q_lift = all_Q_lift[best_idx]
+    best_phys, best_lift = _select_phys_lift(
+        kemeny_phys_vals, kemeny_lift_vals, higher_is_better=False,
+    )
+    print(
+        f"CTCV Kemeny: {len(kemeny_phys_vals)} trials, "
+        f"K(P_bar*)={best_phys:.3f} K^lift(P*)={best_lift:.3f} (best-physical trial); "
+        f"K(P_bar*) mean={np.mean(kemeny_phys_vals):.3f} ± {np.std(kemeny_phys_vals):.3f}, "
+        f"K^lift(P*) mean={np.mean(kemeny_lift_vals):.3f} ± {np.std(kemeny_lift_vals):.3f}",
+        flush=True,
+    )
+    return best_phys, best_lift
 
-    P_lift = ergodic_flow_to_transition(Q_lift)
-    P_lift = P_lift / P_lift.sum(axis=1, keepdims=True)  # exact row-stochasticity for rng.choice
-    pi = Q_lift.sum(axis=1)
-    pi = pi / pi.sum()
-    pi_bar = pi_bar / pi_bar.sum()
-    virtual_to_physical = V.argmax(axis=1)
-    m = W.shape[0]
-    n = P_lift.shape[0]
 
-    capture_times = []
-    for _ in range(N_trials):
-        patroller = rng.choice(n, p=pi)
-        attacker = rng.choice(m, p=pi_bar)
-        t = 0.0
-        while True:
-            next_state = rng.choice(n, p=P_lift[patroller])
-            t += W_lift[patroller, next_state]
-            patroller = next_state
-            if virtual_to_physical[patroller] == attacker:
-                break
-        capture_times.append(t)
+def fig_ctcv_stackelberg(
+    data_path: str = 'results/data/ctcv_stackelberg_diffs.npy',
+) -> tuple[float, float]:
+    """Report the physical and lifted (weighted) Stackelberg metrics achieved on
+    the CTCV campus graph (Sec. IX-D / Table III), from the trial with the
+    best-performing physical MC (see _select_phys_lift). Loads the raw results saved
+    by sweeps.ctcv_stackelberg_improvement and recomputes J(P_bar*)/J^lift(P*) for
+    every trial; V is a per-trial list since each trial's lifting is re-derived from
+    that trial's own realized physical stationary distribution, so W_lift is
+    recomputed per trial from its own V. Mirrors fig_san_francisco_stackelberg.
+    """
+    data = np.load(data_path, allow_pickle=True).item()
+    W = data['W']
+    all_V = data['V']
+    tau = data['tau']
+    all_Q_bar = data['Q_bar']
+    all_Q_lift = data['Q_lift']
 
-    trials = np.arange(1, N_trials + 1)
-    mean_capture_time = np.cumsum(capture_times) / trials
+    stb_phys_vals: list[float] = []
+    stb_lift_vals: list[float] = []
+    for Q_bar, Q_lift, V in zip(all_Q_bar, all_Q_lift, all_V):
+        P_bar = ergodic_flow_to_transition(Q_bar)
+        P_lift = ergodic_flow_to_transition(Q_lift)
+        W_lift = V @ W @ V.T
+        stb_phys_vals.append(stackelberg(P_bar, tau, W))
+        stb_lift_vals.append(lifted_stackelberg(P_lift, V, tau, W_lift))
 
-    fig, ax = plt.subplots()
-    ax.plot(trials, mean_capture_time, label=r'Empirical Mean Capture Time', color='orange')
-    ax.axhline(k_phys, linestyle='--', label=r'$K(\bar{Q})$')
-    ax.axhline(k_lift, linestyle='--', label=r'$K^{\mathrm{lift}}(Q)$', color='orange')
-    ax.set_xlabel('Number of Trials')
-    ax.set_ylabel('Mean Capture Time')
-    ax.legend()
-    plt.tight_layout()
-    plt.savefig('results/figures/san_francisco_mean_capture_time.pdf', bbox_inches='tight')
-    plt.savefig('results/figures/san_francisco_mean_capture_time.png', dpi=150, bbox_inches='tight')
-    print("Saved: results/figures/san_francisco_mean_capture_time.pdf / .png")
+    best_phys, best_lift = _select_phys_lift(
+        stb_phys_vals, stb_lift_vals, higher_is_better=True,
+    )
+    print(
+        f"CTCV Stackelberg: {len(stb_phys_vals)} trials, "
+        f"J(P_bar*)={best_phys:.3f} J^lift(P*)={best_lift:.3f} (best-physical trial); "
+        f"J(P_bar*) mean={np.mean(stb_phys_vals):.3f} ± {np.std(stb_phys_vals):.3f}, "
+        f"J^lift(P*) mean={np.mean(stb_lift_vals):.3f} ± {np.std(stb_lift_vals):.3f}",
+        flush=True,
+    )
+    return best_phys, best_lift
+
+
+def fig_ctcv_rte(
+    data_path: str = 'results/data/ctcv_rte_diffs.npy',
+) -> tuple[float, float]:
+    """Report the physical and lifted (weighted) truncated RTE, as perplexity,
+    achieved on the CTCV campus graph (Sec. IX-D / Table III), from the trial with
+    the best-performing physical MC (see _select_phys_lift). Loads the raw results
+    saved by sweeps.ctcv_rte_improvement, recomputes H(P_bar*)/H^lift(P*) (nats) for
+    every trial from the stored ergodic flow matrices, and converts both to
+    perplexity via _perplexity (exp). Mirrors fig_san_francisco_rte.
+    """
+    data = np.load(data_path, allow_pickle=True).item()
+    W = data['W']
+    V = data['V']
+    eta = data['eta']
+    all_Q_bar = data['Q_bar']
+    all_Q_lift = data['Q_lift']
+    W_lift = V @ W @ V.T
+
+    rte_phys_vals: list[float] = []
+    rte_lift_vals: list[float] = []
+    for Q_bar, Q_lift in zip(all_Q_bar, all_Q_lift):
+        P_bar = ergodic_flow_to_transition(Q_bar)
+        P_lift = ergodic_flow_to_transition(Q_lift)
+        h_phys = return_time_entropy(P_bar, eta, W, pi=Q_bar.sum(axis=1))
+        h_lift = lifted_return_time_entropy(P_lift, V, eta, W_lift, pi=Q_lift.sum(axis=1))
+        rte_phys_vals.append(_perplexity(h_phys))
+        rte_lift_vals.append(_perplexity(h_lift))
+
+    best_phys, best_lift = _select_phys_lift(
+        rte_phys_vals, rte_lift_vals, higher_is_better=True,
+    )
+    print(
+        f"CTCV RTE: {len(rte_phys_vals)} trials, "
+        f"Perp(P_bar*)={best_phys:.3f} Perp^lift(P*)={best_lift:.3f} (best-physical trial); "
+        f"Perp(P_bar*) mean={np.mean(rte_phys_vals):.3f} ± {np.std(rte_phys_vals):.3f}, "
+        f"Perp^lift(P*) mean={np.mean(rte_lift_vals):.3f} ± {np.std(rte_lift_vals):.3f}",
+        flush=True,
+    )
+    return best_phys, best_lift
+
+
+def print_ctcv_table(
+    kemeny_phys: float, kemeny_lift: float,
+    stackelberg_phys: float, stackelberg_lift: float,
+    rte_phys: float, rte_lift: float,
+) -> None:
+    """Print the University of Coimbra (CTCV) case study results for Table III: a
+    single row for the 18-node campus graph (no w_max pruning sweep, unlike San
+    Francisco's Table II, since CTCV is already sparse). The kemeny/stackelberg/rte
+    phys/lift arguments are the physical/lifted pair from the trial with the
+    best-performing physical MC, as returned by fig_ctcv_kemeny/_stackelberg/_rte
+    respectively. RTE Phys./Lift. are reported as perplexity (exp of the truncated
+    return-time entropy), per fig_ctcv_rte.
+    """
+    print("\n--- CTCV case study mean metric values [Table III] ---")
+    print(
+        f"{'Kemeny Phys.':>12} | {'Kemeny Lift.':>12} | "
+        f"{'Stack. Phys.':>12} | {'Stack. Lift.':>12} | {'RTE Phys.':>10} | {'RTE Lift.':>10}"
+    )
+    print(
+        f"{_fmt_sig3(kemeny_phys):>12} | {_fmt_sig3(kemeny_lift):>12} | "
+        f"{_fmt_pct_value(stackelberg_phys):>12} | {_fmt_pct_value(stackelberg_lift):>12} | "
+        f"{_fmt_sig3(rte_phys):>10} | {_fmt_sig3(rte_lift):>10}"
+    )
+    print("")
 
 
 def fig_lifting_budget_sweep_boxplot(
@@ -976,9 +1204,8 @@ def fig_lifting_budget_sweep_boxplot(
     data = np.load(data_path, allow_pickle=True).item()
     m = data['m']
     budget_values_all = np.asarray(data['budget_values'])
-    keep_mask = ~np.isclose(budget_values_all / m, 3)
-    budget_idx_map = np.where(keep_mask, np.cumsum(keep_mask) - 1, -1)
-    budget_values = budget_values_all[keep_mask]
+    budget_idx_map = np.arange(len(budget_values_all))
+    budget_values = budget_values_all
     kemeny_phys_all = data['kemeny_phys']
     results_all = data['results']
     method_names = list(results_all[0].keys())
@@ -1045,8 +1272,8 @@ def fig_lifting_budget_sweep_boxplot(
     # ax.set_ylim(top=30)
     ax.set_xticks(np.arange(n_budgets))
     ax.set_xticklabels([f'{b / m:.2g}' for b in budget_values])
-    ax.set_xlabel('Lifting Budget / $m$')
-    ax.set_ylabel('Decrease in Kemeny Constant [%]')
+    ax.set_xlabel('Lifting Budget / Number of Physical Nodes')
+    ax.set_ylabel('Improvement in Kemeny Constant [%]')
     ax.legend(title='Lifting Method')
     plt.tight_layout()
     plt.savefig('results/figures/lifting_budget_sweep_boxplot.pdf')
@@ -1063,6 +1290,11 @@ if __name__ == "__main__":
     # fig_erdos_renyi_kemeny_percent_decrease()
     # fig_erdos_renyi_stackelberg_percent_increase()
     # fig_erdos_renyi_rte_percent_increase()
+    fig_erdos_renyi_combined_ridgelines(
+        kemeny_data_path='results/data/3m/erdos_renyi_kemeny_diffs.npy',
+        stackelberg_data_path='results/data/3m/erdos_renyi_stackelberg_diffs.npy',
+        rte_data_path='results/data/3m/erdos_renyi_rte_diffs.npy'
+    )
     # fig_lifting_budget_sweep_boxplot()
 
     # fig_san_francisco_mean_capture_time_convergence(seed=0, N_trials=3_000)
@@ -1070,17 +1302,27 @@ if __name__ == "__main__":
     #     kemeny_phys, kemeny_lift, stackelberg_phys, stackelberg_lift, rte_phys, rte_lift,
     # )
 
-    _sf_wmax_dir = 'results/data/san_francisco_wmax_sweep'
-    _sf_wmax_kemeny_manifest = np.load(
-        f'{_sf_wmax_dir}/san_francisco_kemeny_wmax_manifest.npy', allow_pickle=True).item()
-    _sf_wmax_stackelberg_manifest = np.load(
-        f'{_sf_wmax_dir}/san_francisco_stackelberg_wmax_manifest.npy', allow_pickle=True).item()
-    _sf_wmax_rte_manifest = np.load(
-        f'{_sf_wmax_dir}/san_francisco_rte_wmax_manifest.npy', allow_pickle=True).item()
+    # _sf_wmax_dir = 'results/data/san_francisco_wmax_sweep'
+    # _sf_wmax_kemeny_manifest = np.load(
+    #     f'{_sf_wmax_dir}/san_francisco_kemeny_wmax_manifest.npy', allow_pickle=True).item()
+    # _sf_wmax_stackelberg_manifest = np.load(
+    #     f'{_sf_wmax_dir}/san_francisco_stackelberg_wmax_manifest.npy', allow_pickle=True).item()
+    # _sf_wmax_rte_manifest = np.load(
+    #     f'{_sf_wmax_dir}/san_francisco_rte_wmax_manifest.npy', allow_pickle=True).item()
+    # print_san_francisco_wmax_table(
+    #     _sf_wmax_kemeny_manifest, _sf_wmax_stackelberg_manifest, _sf_wmax_rte_manifest,
+    # )
+    # print_san_francisco_wmax_computation_time_table(
+    #     _sf_wmax_kemeny_manifest, _sf_wmax_stackelberg_manifest, _sf_wmax_rte_manifest,
+    # )
 
-    print_san_francisco_wmax_table(
-        _sf_wmax_kemeny_manifest, _sf_wmax_stackelberg_manifest, _sf_wmax_rte_manifest,
-    )
-    print_san_francisco_wmax_computation_time_table(
-        _sf_wmax_kemeny_manifest, _sf_wmax_stackelberg_manifest, _sf_wmax_rte_manifest,
-    )
+    # _ctcv_kemeny_phys, _ctcv_kemeny_lift = fig_ctcv_kemeny()
+    # _ctcv_stackelberg_phys, _ctcv_stackelberg_lift = fig_ctcv_stackelberg()
+    # _ctcv_rte_phys, _ctcv_rte_lift = fig_ctcv_rte()
+    # print_ctcv_table(
+    #     _ctcv_kemeny_phys, _ctcv_kemeny_lift,
+    #     _ctcv_stackelberg_phys, _ctcv_stackelberg_lift,
+    #     _ctcv_rte_phys, _ctcv_rte_lift,
+    # )
+
+    # fig_ctcv_rte()

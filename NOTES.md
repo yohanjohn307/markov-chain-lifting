@@ -284,15 +284,14 @@ faster JIT-compile make it substantially cheaper than SF's own ~476s).
 
 ## `sweeps.py`: lifting-budget sweep
 
-**`kemeny_lifting_budget_sweep`.** Compares six lifting-budget allocation
-heuristics (uniform, stationary, degree, betweenness, eigenvector,
-reversible_flow) across a budget sweep over many random graphs.
-`max_grad_norm_lift` defaults to a stricter 200 than `max_grad_norm_phys`'s
-2000, for the same reason as `erdos_renyi_kemeny_improvement`: near-zero
-stationary mass on a virtual state (more likely at larger budgets or skewed
-allocations like `reversible_flow_lifting`) can make the adjoint solves
-severely ill-conditioned. An empirical sweep across all six methods at
-`budget in {2m, 3m}` found 2000 let PGD diverge outright on 2/60
+**`kemeny_lifting_budget_sweep`.** Compares five lifting-budget allocation
+heuristics (uniform, stationary, degree, betweenness, eigenvector) across a
+budget sweep over many random graphs. `max_grad_norm_lift` defaults to a
+stricter 200 than `max_grad_norm_phys`'s 2000, for the same reason as
+`erdos_renyi_kemeny_improvement`: near-zero stationary mass on a virtual
+state (more likely at larger budgets or skewed allocations) can make the
+adjoint solves severely ill-conditioned. An empirical sweep across all five
+methods at `budget in {2m, 3m}` found 2000 let PGD diverge outright on 2/60
 (budget, method) combinations and land on `no_improvement` on 10/60 more,
 while 200 eliminated every such case and roughly doubled the mean percent
 decrease.

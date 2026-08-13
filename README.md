@@ -24,7 +24,7 @@ underestimates the patroller's true performance.
 | --- | --- |
 | [`markov.py`](markov.py) | Core MC utilities: stationary distribution, transition matrix ↔ ergodic flow conversions, lifting/collapsing (`collapsing`), and conductance. |
 | [`metrics.py`](metrics.py) | Surveillance performance metrics: Kemeny constant, Stackelberg capture probability, and return-time entropy, plus their lifted counterparts (`lifted_kemeny`, `lifted_stackelberg`, `lifted_return_time_entropy`). |
-| [`graph.py`](graph.py) | Graph generation (Erdős–Rényi graphs/digraphs), lifting-budget assignment strategies (uniform, stationary-distribution, degree, betweenness, eigenvector centrality, reversible flow), and the real-world case-study graphs (San Francisco police patrol, CTCV campus, airport hub). |
+| [`graph.py`](graph.py) | Graph generation (Erdős–Rényi graphs/digraphs), lifting-budget assignment strategies (uniform, stationary-distribution, degree, betweenness, eigenvector centrality), and the real-world case-study graphs (San Francisco police patrol, CTCV campus, airport hub). |
 | [`optimize.py`](optimize.py) | Projected gradient descent (PGD) for optimizing a physical or lifted MC's ergodic flow against a given metric, with `cvxpy`/OSQP projection steps and closed-form/JAX-autodiff gradients. |
 | [`sweeps.py`](sweeps.py) | Experiment drivers that sweep over graphs, lifting budgets, and lifting-assignment methods, calling into `optimize.py` and saving results to `results/data/`. |
 | [`figures.py`](figures.py) | Plotting code that consumes `results/data/` and produces the paper's figures/tables in `results/figures/`. |

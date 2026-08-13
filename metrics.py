@@ -3,6 +3,24 @@ import numpy as np
 from markov import _check_stochastic, _check_mapping, stationary_distribution
 
 
+def mean_passage_time_matrix(Pbar: np.ndarray, W: np.ndarray | None = None) -> np.ndarray:
+    """Compute the mean passage time matrix M (Eq. 5), whose (i, j) entry is the mean
+    first passage time m^j_i from state i to state j. W is the edge weight matrix,
+    default unit weights.
+    """
+    _check_stochastic(Pbar)
+    n = Pbar.shape[0]
+    if W is None:
+        W = np.ones((n, n))
+    rhs = (Pbar * W) @ np.ones(n)
+    M = np.zeros((n, n))
+    for j in range(n):
+        gamma_j = np.ones(n)
+        gamma_j[j] = 0
+        M[:, j] = np.linalg.solve(np.eye(n) - Pbar @ np.diag(gamma_j), rhs)
+    return M
+
+
 def kemeny(Pbar: np.ndarray, W: np.ndarray | None = None, pi: np.ndarray | None = None) -> float:
     """Compute the Kemeny constant.
 
@@ -10,19 +28,30 @@ def kemeny(Pbar: np.ndarray, W: np.ndarray | None = None, pi: np.ndarray | None 
     distribution; if None it is solved via stationary_distribution(Pbar) (see
     NOTES.md for why passing a known pi, e.g. from Q.sum(axis=1), is preferable).
     """
-    _check_stochastic(Pbar)
-    n = Pbar.shape[0]
-    if W is None:
-        W = np.ones((n, n))
     if pi is None:
         pi = stationary_distribution(Pbar)
-    rhs = (Pbar * W) @ np.ones(n)
-    M = np.zeros((n, n))
-    for j in range(n):
-        gamma_j = np.ones(n)
-        gamma_j[j] = 0
-        M[:, j] = np.linalg.solve(np.eye(n) - Pbar @ np.diag(gamma_j), rhs)
+    M = mean_passage_time_matrix(Pbar, W)
     return float(pi @ M @ pi)
+
+
+def lifted_mean_passage_time_matrix(P: np.ndarray, V: np.ndarray, W: np.ndarray | None = None) -> np.ndarray:
+    """Compute the lifted set mean passage time matrix M^lift (Eq. 19), whose (i, j)
+    entry is the mean first passage time m^{Sj}_i from virtual state i to the set of
+    virtual states Sj mapping to physical node j. V is the n x m mapping matrix whose
+    j-th column indicates which virtual states belong to physical node j. W is the
+    edge weight matrix, default unit weights.
+    """
+    _check_stochastic(P)
+    _check_mapping(V, n=P.shape[0])
+    n, m = V.shape
+    if W is None:
+        W = np.ones((n, n))
+    rhs = (P * W) @ np.ones(n)
+    M_lift = np.zeros((n, m))
+    for j in range(m):
+        D_j = np.diag(V[:, j])
+        M_lift[:, j] = np.linalg.solve(np.eye(n) - P + P @ D_j, rhs)
+    return M_lift
 
 
 def lifted_kemeny(
@@ -33,18 +62,9 @@ def lifted_kemeny(
     V is the n x m mapping matrix whose j-th column indicates which virtual states
     belong to physical node j. W, pi as in kemeny().
     """
-    _check_stochastic(P)
-    _check_mapping(V, n=P.shape[0])
-    n, m = V.shape
-    if W is None:
-        W = np.ones((n, n))
     if pi is None:
         pi = stationary_distribution(P)
-    rhs = (P * W) @ np.ones(n)
-    M_lift = np.zeros((n, m))
-    for j in range(m):
-        D_j = np.diag(V[:, j])
-        M_lift[:, j] = np.linalg.solve(np.eye(n) - P + P @ D_j, rhs)
+    M_lift = lifted_mean_passage_time_matrix(P, V, W)
     return float(pi @ M_lift @ V.T @ pi)
 
 
